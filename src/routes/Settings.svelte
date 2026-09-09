@@ -7,11 +7,16 @@
     type Theme,
   } from "../lib/settings.svelte";
   import { wallet } from "../lib/wallet.svelte";
+  import AssetIcon from "../lib/AssetIcon.svelte";
+  import SendDialog from "../lib/SendDialog.svelte";
+  import { BY_ID } from "../lib/assets";
   import {
     ipc,
     type MoneroKeys,
     type MoneroSetup,
     type MoneroStatus,
+    type AssetId,
+    type Donation,
   } from "../lib/ipc";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
 
@@ -54,12 +59,33 @@
   // still needs a value, so it shows the dark-theme default.
   const accentValue = $derived(settings.accent ?? DEFAULT_ACCENT);
 
+  // Tipping.
+  let donations = $state<Donation[]>([]);
+  let tipping = $state<Donation | null>(null);
+
+  // Only chains this wallet can actually sign for. Monero is included once
+  // its daemon is up, same as anywhere else.
+  const SENDABLE_TIPS = $derived<AssetId[]>(
+    settings.moneroReady
+      ? ["BTC", "LTC", "ETH", "SOL", "XMR"]
+      : ["BTC", "LTC", "ETH", "SOL"],
+  );
+
+  $effect(() => {
+    ipc
+      .donationAddresses()
+      .then((list) => (donations = list))
+      .catch(() => {
+        /* the section simply stays empty */
+      });
+  });
+
   // One-button Monero setup.
   let setup = $state<MoneroSetup | null>(null);
   let settingUp = $state(false);
   let setupStep = $state("Working");
   let setupError = $state<string | null>(null);
-  let daemonAddress = $state("xmr-node.cakewallet.com:18081");
+  let daemonAddress = $state(settings.moneroDaemon);
 
   $effect(() => {
     ipc
@@ -75,7 +101,8 @@
     setupError = null;
     setupStep = setup?.installed ? "Starting" : "Downloading Monero";
     try {
-      const result = await ipc.moneroSetupRun(daemonAddress.trim() || null);
+      settings.setMoneroDaemon(daemonAddress);
+      const result = await ipc.moneroSetupRun(settings.moneroDaemon);
       setup = result;
       if (result.running) {
         // The bridge always listens here, so the endpoint is not a question
@@ -91,12 +118,8 @@
   }
 
   async function stopMonero() {
-    try {
-      setup = await ipc.moneroStop();
-    } catch (e) {
-      setupError = (e as { message?: string }).message ?? String(e);
-    }
-    settings.setMoneroEndpoint("");
+    await wallet.stopMonero();
+    setup = await ipc.moneroSetupState();
   }
 
   // Manual bridge, kept for anyone already running their own daemon.
@@ -212,9 +235,11 @@
       only local addresses are ever accepted.
     </p>
 
-    {#if setup?.running}
+    {#if wallet.moneroStarting}
+      <p class="hint-note">Starting Monero.</p>
+    {:else if setup?.running || wallet.moneroRunning}
       <p class="ok-note">
-        Running Monero {setup.version}. Balances and sending are live.
+        Running{setup ? ` Monero ${setup.version}` : ""}. Balances and sending are live.
         <button class="inline" onclick={stopMonero}>Stop</button>
       </p>
     {:else}
@@ -410,17 +435,67 @@
     </p>
   </section>
 
-  <section class="card pending">
-    <h2>Tip the creator <span class="tag">Not built</span></h2>
+  <section class="card">
+    <h2>Tip the creator</h2>
     <p class="muted">
-      Sends a payment to a fixed address. Shows the destination and an editable
-      amount, and always asks before sending.
+      These addresses are fixed and compiled into the program. Nothing is ever
+      sent without you choosing an amount and confirming, exactly like any
+      other payment.
     </p>
+
+    {#if donations.length > 0}
+      <ul class="tips">
+        {#each donations as tip (tip.asset)}
+          {@const meta = BY_ID[tip.asset]}
+          {@const canSend = SENDABLE_TIPS.includes(tip.asset)}
+          <li>
+            <button
+              class="tip"
+              disabled={!canSend}
+              title={canSend ? "" : `Sending ${meta.name} is not implemented yet`}
+              onclick={() => (tipping = tip)}
+            >
+              <AssetIcon asset={meta} size={26} />
+              <span class="tname">
+                {meta.name}
+                {#if tip.host}<span class="on">on {tip.host}</span>{/if}
+              </span>
+              <span class="taddr mono">{tip.address.slice(0, 10)}…{tip.address.slice(-6)}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
   </section>
 </div>
 
+{#if tipping}
+  <SendDialog
+    initial={tipping.asset}
+    presetTo={tipping.address}
+    presetNote="The creator's {BY_ID[tipping.asset].name} address, built into this program."
+    onclose={() => (tipping = null)}
+    onsent={() => void wallet.refresh()}
+  />
+{/if}
+
 <style>
   .view { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
+  .tips { display: flex; flex-direction: column; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
+  .tip {
+    display: flex; align-items: center; gap: 11px; width: 100%;
+    padding: 9px 11px; text-align: left;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-raised); font-size: 13px;
+  }
+  .tip:hover:not(:disabled) { background: var(--card-hover); }
+  .tip:disabled { opacity: 0.45; cursor: not-allowed; }
+  .tname { display: flex; align-items: baseline; gap: 6px; }
+  .on {
+    padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border-strong);
+    color: var(--text-faint); font-size: 10px; font-weight: 600;
+  }
+  .taddr { margin-left: auto; font-size: 11.5px; color: var(--text-faint); }
   h1 { margin: 0; font-size: 20px; font-weight: 650; }
   section { padding: 20px 22px; }
   h2 {

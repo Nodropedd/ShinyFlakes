@@ -38,6 +38,10 @@ class Wallet {
   /** Monero spendable balance, which lags the total while change matures. */
   moneroUnlocked = $state<string | null>(null);
 
+  moneroRunning = $state(false);
+  moneroStarting = $state(false);
+  moneroError = $state<string | null>(null);
+
   connected = $state(false);
   loading = $state(false);
   error = $state<string | null>(null);
@@ -57,11 +61,47 @@ class Wallet {
   /** Called once on unlock. Starts polling only if consent was already given. */
   start() {
     void this.loadAddresses();
+
+    // Monero was left switched on, so bring its daemon back up rather than
+    // showing a connection error for something the user already set up.
+    // Stopping it clears the endpoint, so a deliberate stop stays stopped.
+    if (settings.moneroReady) {
+      void this.startMonero();
+    }
+
     if (stored(CONSENT_KEY) === "yes") {
       this.connected = true;
       void this.refresh();
       this.#schedule();
     }
+  }
+
+  /** Brings the Monero daemon up, adopting one that is already running. */
+  async startMonero() {
+    if (this.moneroStarting) return;
+    this.moneroStarting = true;
+    this.moneroError = null;
+    try {
+      const result = await ipc.moneroSetupRun(settings.moneroDaemon);
+      this.moneroRunning = result.running;
+      if (result.running && this.connected) await this.refresh();
+    } catch (e) {
+      this.moneroRunning = false;
+      this.moneroError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      this.moneroStarting = false;
+    }
+  }
+
+  async stopMonero() {
+    try {
+      const result = await ipc.moneroStop();
+      this.moneroRunning = result.running;
+    } catch (e) {
+      this.moneroError = (e as { message?: string }).message ?? String(e);
+    }
+    settings.setMoneroEndpoint("");
+    this.moneroUnlocked = null;
   }
 
   stop() {
@@ -140,7 +180,10 @@ class Wallet {
 
     // Monero cannot be read from an address, so it comes from the local
     // wallet daemon instead, when one has been configured.
-    if (settings.moneroReady) {
+    //
+    // Skipped while the daemon is still coming up: asking too early would
+    // report a connection failure for something that is simply not ready.
+    if (settings.moneroReady && !this.moneroStarting) {
       try {
         const xmr = await ipc.xmrBalance(settings.moneroEndpoint);
         this.balances = {

@@ -157,6 +157,17 @@ pub async fn generate_from_keys(
     Ok(())
 }
 
+/// Writes the wallet cache to disk and closes it.
+///
+/// Killing the daemon outright cannot lose money, since that lives on the
+/// chain and the keys come from the seed, but it can leave the scan cache
+/// half-written and force a slow rescan. Asking first avoids that.
+pub async fn close_wallet(endpoint: &str) -> Result<()> {
+    let _: Empty = call(endpoint, "store", serde_json::json!({})).await?;
+    let _: Empty = call(endpoint, "close_wallet", serde_json::json!({})).await?;
+    Ok(())
+}
+
 /// Opens an existing wallet file. Harmless if it is already open.
 pub async fn open_wallet(endpoint: &str, filename: &str, password: &str) -> Result<()> {
     match call::<Empty>(

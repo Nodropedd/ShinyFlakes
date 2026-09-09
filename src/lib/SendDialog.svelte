@@ -17,7 +17,17 @@
     initial,
     onclose,
     onsent,
-  }: { initial: AssetId | null; onclose: () => void; onsent: () => void } = $props();
+    presetTo = null,
+    presetNote = null,
+  }: {
+    initial: AssetId | null;
+    onclose: () => void;
+    onsent: () => void;
+    /** Fills the recipient in advance. Still editable, and still shown in
+     *  full, so a prefilled address is never a hidden one. */
+    presetTo?: string | null;
+    presetNote?: string | null;
+  } = $props();
 
   // Chains whose signing is implemented. The rest appear but cannot be
   // picked, so the gap is visible rather than hidden behind an empty list.
@@ -35,7 +45,7 @@
   let chosen = $state<AssetId | null>(
     untrack(() => (initial && SENDABLE.includes(initial) ? initial : null)),
   );
-  let to = $state("");
+  let to = $state(untrack(() => presetTo ?? ""));
   let amount = $state("");
 
   // Coin control. Only Bitcoin-style chains hold discrete outputs to choose
@@ -303,6 +313,9 @@
       <label class="field">
         <span>Recipient address</span>
         <input class="mono" bind:value={to} oninput={reset} spellcheck="false" />
+        {#if presetNote}
+          <span class="hint">{presetNote}</span>
+        {/if}
       </label>
 
       <label class="field">

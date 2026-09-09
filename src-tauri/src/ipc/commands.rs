@@ -997,6 +997,12 @@ pub async fn xmr_send(
     chains::xmr_rpc::send(&endpoint, &to, amount).await
 }
 
+/// Where a tip goes, per asset. Fixed and compiled in.
+#[tauri::command]
+pub fn donation_addresses() -> Vec<crate::donation::Donation> {
+    crate::donation::addresses()
+}
+
 /// Whether Monero is installed, set up, and running.
 ///
 /// Running is decided by asking the port, not by whether this session started
@@ -1069,9 +1075,22 @@ pub async fn monero_setup_run(
 }
 
 /// Stops the Monero daemon, including one left over from an earlier run.
+///
+/// The wallet is asked to save and close first. That cannot protect the money,
+/// which lives on the chain, but it protects the scan cache from being left
+/// half-written and needing a slow rebuild.
 #[tauri::command]
-pub fn monero_stop(state: State<AppState>) -> chains::xmr_setup::SetupState {
+pub async fn monero_stop(
+    state: State<'_, AppState>,
+) -> Result<chains::xmr_setup::SetupState> {
+    let data_dir = state.data_dir.clone();
+    let endpoint = format!("http://127.0.0.1:{}/json_rpc", chains::xmr_setup::RPC_PORT);
+
+    // Best effort: a daemon that has already gone will not answer, and that
+    // is not a reason to refuse to clean up after it.
+    let _ = chains::xmr_rpc::close_wallet(&endpoint).await;
+
     state.stop_monero();
-    chains::xmr_setup::stop_any(&state.data_dir);
-    chains::xmr_setup::state(&state.data_dir, false)
+    chains::xmr_setup::stop_any(&data_dir);
+    Ok(chains::xmr_setup::state(&data_dir, false))
 }

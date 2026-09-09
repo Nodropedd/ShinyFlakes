@@ -19,6 +19,10 @@ const DENOM_KEY = "shinyflakes.denominate";
 const THEME_KEY = "shinyflakes.theme";
 const ACCENT_KEY = "shinyflakes.accent";
 const MONERO_KEY = "shinyflakes.moneroEndpoint";
+const MONERO_DAEMON_KEY = "shinyflakes.moneroDaemon";
+
+/// Public node used until someone points this at their own.
+export const DEFAULT_MONERO_DAEMON = "xmr-node.cakewallet.com:18081";
 
 // Where monero-wallet-rpc listens out of the box.
 export const DEFAULT_MONERO_ENDPOINT = "http://127.0.0.1:18082/json_rpc";
@@ -77,6 +81,16 @@ class Settings {
   setMoneroEndpoint(endpoint: string) {
     this.moneroEndpoint = endpoint.trim();
     write(MONERO_KEY, this.moneroEndpoint);
+  }
+
+  /** Which node the Monero wallet reads the chain from. Remembered, so
+   *  starting automatically uses the one that was chosen rather than
+   *  quietly falling back to the public default. */
+  moneroDaemon = $state<string>(read(MONERO_DAEMON_KEY, DEFAULT_MONERO_DAEMON));
+
+  setMoneroDaemon(daemon: string) {
+    this.moneroDaemon = daemon.trim() || DEFAULT_MONERO_DAEMON;
+    write(MONERO_DAEMON_KEY, this.moneroDaemon);
   }
 
   /** Pushes theme and accent onto the document. Called once at startup and

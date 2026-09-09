@@ -69,6 +69,17 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             ];
           case "next_receive_address":
             return { asset: "BTC", address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", index: 4, rotates: true };
+          case "donation_addresses":
+            return [
+              { asset: "BTC", address: "bc1qpy3p4gxa4d3x3w0lryma77qqdrfgwhfqwhw7tn", host: null },
+              { asset: "LTC", address: "LVhh3tqqbo7bQmQtCgsbuVbdVvCpKhEpCy", host: null },
+              { asset: "XMR", address: "42oUemzbsb9A5fWPhaCaBbKmafMXqyTpSKnE8Rco5iyjQNN7NYmct8CS7HFcA8omm6ABgBzDy2NPQTu1zubFH3UuRLwnNUL", host: null },
+              { asset: "ETH", address: "0x7aE8380cF08BD44629d099F05eD85570a8d7B930", host: null },
+              { asset: "SOL", address: "7oW2bBM5iU4At2ZBJqv81zG7dV2XGWeBHdDYozdZojnb", host: null },
+              { asset: "TRON", address: "TKoYYY3jnZHUJhgS8HodUXKzwhZQjDyeLW", host: null },
+              { asset: "USDC", address: "7oW2bBM5iU4At2ZBJqv81zG7dV2XGWeBHdDYozdZojnb", host: "SOL" },
+              { asset: "USDT", address: "TKoYYY3jnZHUJhgS8HodUXKzwhZQjDyeLW", host: "TRON" },
+            ];
           case "monero_setup_state":
             return { installed: false, walletExists: false, running: false, version: "v0.18.5.1" };
           case "monero_setup_run":

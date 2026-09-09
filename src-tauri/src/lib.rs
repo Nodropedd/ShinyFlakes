@@ -1,5 +1,6 @@
 mod chains;
 mod crypto;
+mod donation;
 mod error;
 mod ipc;
 mod keychain;
@@ -73,6 +74,7 @@ pub fn run() {
             ipc::monero_setup_state,
             ipc::monero_setup_run,
             ipc::monero_stop,
+            ipc::donation_addresses,
         ])
         .build(tauri::generate_context!())
         .expect("ShinyFlakes failed to start")

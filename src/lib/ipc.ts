@@ -177,6 +177,13 @@ export interface MoneroTransfer {
   amountMinor: string;
 }
 
+export interface Donation {
+  asset: AssetId;
+  address: string;
+  /** Set when the asset is a token held on another chain. */
+  host: AssetId | null;
+}
+
 /** Mirrors the `WalletError` enum on the Rust side. */
 export interface IpcError {
   kind: string;
@@ -262,6 +269,9 @@ export const ipc = {
 
   /** What the account can afford, so the UI can offer a working maximum. */
   sendLimits: (asset: AssetId) => call<SendLimits>("send_limits", { asset }),
+
+  /** Where a tip goes, per asset. Fixed and compiled into the program. */
+  donationAddresses: () => call<Donation[]>("donation_addresses"),
 
   /** Whether Monero is installed, set up and running. */
   moneroSetupState: () => call<MoneroSetup>("monero_setup_state"),
