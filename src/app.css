@@ -1,0 +1,265 @@
+/* Brand script face, bundled in the binary rather than fetched. A font CDN
+   would leak every app launch to a third party, which is not a trade this
+   app makes. SIL Open Font License, see assets/fonts/OFL.txt. */
+@font-face {
+  font-family: "Pacifico";
+  src: url("./assets/fonts/Pacifico-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Theme tokens. Accent is user-configurable at runtime via a color picker,
+   so every accent use reads from --accent rather than hardcoding a value.
+   No webfonts are loaded: the app makes no network requests it does not
+   have to, and a font CDN would leak app launches to a third party. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #14161b;
+  --bg-raised: #1a1d24;
+  --card: #1e222b;
+  --card-hover: #242833;
+  --border: #2b303b;
+  --border-strong: #3a4150;
+
+  --text: #e8eaef;
+  --text-muted: #939aa8;
+  --text-faint: #6a7180;
+
+  /* Brand gold. Fixed, not tied to --accent, so recolouring the UI does
+     not recolour the logo. */
+  --gold: #ffc83d;
+
+  --accent: #f2c14e;
+  --accent-ink: #14161b;
+
+  --danger: #e5484d;
+  --warn: #f5a524;
+  --ok: #30a46c;
+
+  /* Per-asset accents, used on icons and highlights only, never as
+     full backgrounds. */
+  --asset-btc: #f7931a;
+  --asset-ltc: #345d9d;
+  --asset-xmr: #ff6600;
+  --asset-eth: #627eea;
+  --asset-sol: #14f195;
+  --asset-tron: #ff060a;
+  --asset-usdc: #2775ca;
+  --asset-usdt: #26a17b;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+
+  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", system-ui,
+    sans-serif;
+  --font-brand: "Pacifico", "Segoe Script", cursive;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+
+/* Light palette.
+   The dark values above are the base because this is a dark-first product.
+   Everything below only redefines colour tokens, never layout, so a theme
+   switch cannot move anything on the page.
+
+   Two rules, deliberately: the media query handles "follow the system" and
+   yields to an explicit dark choice, while the attribute rule wins outright
+   when the user has picked light. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --bg: #f4f6f9;
+    --bg-raised: #ffffff;
+    --card: #ffffff;
+    --card-hover: #f1f4f8;
+    --border: #e2e7ef;
+    --border-strong: #c8d1de;
+
+    --text: #141824;
+    --text-muted: #5a6475;
+    --text-faint: #8a94a5;
+
+    /* Bright gold vanishes on white, so the mark darkens rather than fading. */
+    --gold: #d9930f;
+    --accent: #c9911a;
+
+    --danger: #d0342c;
+    --warn: #b26a00;
+    --ok: #1a7f4b;
+
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.08);
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.07);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f4f6f9;
+  --bg-raised: #ffffff;
+  --card: #ffffff;
+  --card-hover: #f1f4f8;
+  --border: #e2e7ef;
+  --border-strong: #c8d1de;
+
+  --text: #141824;
+  --text-muted: #5a6475;
+  --text-faint: #8a94a5;
+
+  --gold: #d9930f;
+  --accent: #c9911a;
+
+  --danger: #d0342c;
+  --warn: #b26a00;
+  --ok: #1a7f4b;
+
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.08);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+
+  /* Wallet chrome should not feel like a web page. */
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+/* Anything holding an address, an amount, or a seed word stays selectable
+   so the user can copy it. */
+.selectable,
+input,
+textarea {
+  user-select: text;
+  cursor: auto;
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 120ms var(--ease), box-shadow 120ms var(--ease);
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  transition: background 120ms var(--ease), border-color 120ms var(--ease),
+    transform 80ms var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--card-hover);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, white);
+}
+
+/* Dimming the gold turns it brown against this background, so a disabled
+   primary drops to a neutral surface instead of a faded accent. */
+.btn-primary:disabled {
+  opacity: 1;
+  background: var(--bg-raised);
+  border-color: var(--border);
+  color: var(--text-faint);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

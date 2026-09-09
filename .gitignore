@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Never commit anything holding key material or local vault state.
+*.vault
+*.seed
+.env
+.env.*
