@@ -27,7 +27,9 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
       invoke: async (cmd: string) => {
         switch (cmd) {
           case "vault_status":
-            return { initialized: true, unlocked: true };
+            return { initialized: true, unlocked: true, needsPassphrase: false };
+          case "set_vault_passphrase":
+            return null;
           case "list_buckets":
             return [];
           case "fetch_balances":

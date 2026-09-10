@@ -16,13 +16,21 @@ use crate::store::{self, Bucket, VaultPayload};
 pub struct VaultStatus {
     pub initialized: bool,
     pub unlocked: bool,
+    /// The vault is sealed with a passphrase, so unlocking needs one on top
+    /// of the seed phrase.
+    pub needs_passphrase: bool,
 }
 
 #[tauri::command]
 pub fn vault_status(state: State<AppState>) -> VaultStatus {
+    let initialized = store::exists(&state.vault_path);
     VaultStatus {
-        initialized: store::exists(&state.vault_path),
+        initialized,
         unlocked: state.is_unlocked(),
+        needs_passphrase: initialized
+            && store::lock_info(&state.vault_path)
+                .map(|i| i.needs_passphrase)
+                .unwrap_or(false),
     }
 }
 
@@ -48,7 +56,8 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
         mnemonic: parsed.to_string(),
         buckets: Vec::new(),
     };
-    store::write(&state.vault_path, &key, &payload)?;
+    // A new wallet has no passphrase; one is added later from Settings.
+    store::write(&state.vault_path, &key, None, &payload)?;
 
     let mut guard = state
         .unlocked
@@ -68,7 +77,11 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
 }
 
 #[tauri::command]
-pub fn unlock(mnemonic: String, state: State<AppState>) -> Result<()> {
+pub fn unlock(
+    mnemonic: String,
+    passphrase: Option<String>,
+    state: State<AppState>,
+) -> Result<()> {
     let phrase = Zeroizing::new(mnemonic);
 
     if !store::exists(&state.vault_path) {
@@ -86,7 +99,8 @@ pub fn unlock(mnemonic: String, state: State<AppState>) -> Result<()> {
         WalletError::NoVault => WalletError::KeyMissing,
         other => other,
     })?;
-    let payload = store::read(&state.vault_path, &key)?;
+    let pass = passphrase.as_deref().filter(|p| !p.is_empty());
+    let payload = store::read(&state.vault_path, &key, pass)?;
 
     // The vault key comes from the OS keychain, so decryption succeeding does
     // not by itself prove the right seed was entered. Compare explicitly.
@@ -1041,7 +1055,70 @@ pub fn inactivity_set_action(
             return Err(WalletError::Unsupported(format!("unknown action {other}")))
         }
     };
+
+    // Donate mode sweeps unattended, which needs the seed with no one present
+    // to type a passphrase. So the two cannot both be on.
+    if matches!(action, crate::inactivity::Action::Donate)
+        && store::lock_info(&state.vault_path)
+            .map(|i| i.needs_passphrase)
+            .unwrap_or(false)
+    {
+        return Err(WalletError::Unsupported(
+            "Send to donations cannot be used while a passphrase is set, because an \
+             unattended sweep cannot ask for one. Remove the passphrase first, or choose \
+             delete."
+                .into(),
+        ));
+    }
+
     crate::inactivity::set_action(&state.data_dir, action)
+}
+
+/// Adds, changes, or removes the vault passphrase.
+///
+/// `current` is the passphrase in force now, needed to read the vault before
+/// re-sealing it. `next` is what to set; an empty or absent value removes it.
+/// The re-encrypted vault is read back before the change is called done, so a
+/// derivation slip cannot leave the wallet unopenable.
+#[tauri::command]
+pub fn set_vault_passphrase(
+    current: Option<String>,
+    next: Option<String>,
+    state: State<AppState>,
+) -> Result<()> {
+    // Requiring an unlocked session means whoever changes the passphrase has
+    // already proven they hold the seed.
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    if !store::exists(&state.vault_path) {
+        return Err(WalletError::NoVault);
+    }
+
+    let key = keychain::load()?;
+
+    let needs = store::lock_info(&state.vault_path)
+        .map(|i| i.needs_passphrase)
+        .unwrap_or(false);
+    let current = current.as_deref().filter(|p| !p.is_empty());
+    let read_pass = if needs { current } else { None };
+
+    // Verifies the current passphrase by decrypting with it.
+    let payload = store::read(&state.vault_path, &key, read_pass)?;
+
+    let next = next.as_deref().filter(|p| !p.is_empty());
+    store::write(&state.vault_path, &key, next, &payload)?;
+
+    // Prove the new sealing opens before treating the change as done.
+    store::read(&state.vault_path, &key, next)?;
+
+    // A passphrase and donate mode are mutually exclusive, so turning one on
+    // stands the other down.
+    if next.is_some() {
+        let _ = crate::inactivity::set_action(&state.data_dir, crate::inactivity::Action::Delete);
+    }
+
+    Ok(())
 }
 
 /// One chain's outcome during an inactivity sweep.
@@ -1079,7 +1156,10 @@ impl SweepResult {
 /// is available. It is used for nothing else.
 fn recover_seed(state: &State<AppState>) -> Result<[u8; 64]> {
     let key = keychain::load()?;
-    let payload = store::read(&state.vault_path, &key)?;
+    // No passphrase is supplied: this path runs unattended. A vault sealed
+    // with one therefore cannot be read here, which is exactly why donate mode
+    // is refused while a passphrase is set.
+    let payload = store::read(&state.vault_path, &key, None)?;
     let parsed = seed::parse(&payload.mnemonic)?;
     Ok(*seed::to_seed(&parsed))
 }

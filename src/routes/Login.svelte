@@ -10,6 +10,7 @@
   );
 
   let phrase = $state("");
+  let passphrase = $state("");
   let busy = $state(false);
   let error = $state<string | null>(null);
 
@@ -54,6 +55,7 @@
 
   function scrub() {
     phrase = "";
+    passphrase = "";
   }
 
   async function submit() {
@@ -62,7 +64,7 @@
     error = null;
     try {
       if (mode === "unlock") {
-        await ipc.unlock(phrase);
+        await ipc.unlock(phrase, passphrase);
       } else {
         await ipc.createVault(phrase);
       }
@@ -208,6 +210,20 @@
         {/if}
       </div>
 
+      {#if mode === "unlock" && session.status.needsPassphrase}
+        <input
+          class="mono passfield"
+          type="password"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="Passphrase"
+          bind:value={passphrase}
+          onkeydown={(e) => {
+            if (e.key === "Enter") submit();
+          }}
+        />
+      {/if}
+
       {#if error}
         <p class="error">{error}</p>
       {/if}
@@ -299,6 +315,11 @@
     width: 100%;
     resize: none;
     line-height: 1.7;
+  }
+
+  .passfield {
+    width: 100%;
+    margin-top: 10px;
   }
 
   .meta {

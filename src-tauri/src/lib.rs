@@ -84,6 +84,7 @@ pub fn run() {
             ipc::inactivity_set_months,
             ipc::inactivity_set_action,
             ipc::inactivity_sweep,
+            ipc::set_vault_passphrase,
         ])
         .build(tauri::generate_context!())
         .expect("ShinyFlakes failed to start")

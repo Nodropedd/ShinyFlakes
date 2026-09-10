@@ -25,6 +25,8 @@ export interface VaultStatus {
   initialized: boolean;
   /** Keys are currently derived and held in memory. */
   unlocked: boolean;
+  /** Unlocking needs a passphrase on top of the seed phrase. */
+  needsPassphrase: boolean;
 }
 
 export interface Bucket {
@@ -261,7 +263,12 @@ export const ipc = {
 
   createVault: (mnemonic: string) => call<void>("create_vault", { mnemonic }),
 
-  unlock: (mnemonic: string) => call<void>("unlock", { mnemonic }),
+  unlock: (mnemonic: string, passphrase?: string | null) =>
+    call<void>("unlock", { mnemonic, passphrase }),
+
+  /** Adds, changes or removes the vault passphrase. Empty next removes it. */
+  setVaultPassphrase: (current: string | null, next: string | null) =>
+    call<void>("set_vault_passphrase", { current, next }),
 
   /** Drops derived key material, keeps the vault file. */
   lock: () => call<void>("lock"),

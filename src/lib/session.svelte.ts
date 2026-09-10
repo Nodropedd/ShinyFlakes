@@ -7,7 +7,11 @@ import { ipc, type Inactivity, type VaultStatus } from "./ipc";
 export type Screen = "loading" | "cold-start" | "locked" | "wallet";
 
 class Session {
-  status = $state<VaultStatus>({ initialized: false, unlocked: false });
+  status = $state<VaultStatus>({
+    initialized: false,
+    unlocked: false,
+    needsPassphrase: false,
+  });
 
   /** Set when the inactivity switch cleared the wallet, so the cold start can
    *  explain itself rather than looking like data loss. */

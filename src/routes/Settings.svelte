@@ -61,6 +61,44 @@
   // still needs a value, so it shows the dark-theme default.
   const accentValue = $derived(settings.accent ?? DEFAULT_ACCENT);
 
+  // Vault passphrase, a second factor on top of the seed.
+  let curPass = $state("");
+  let newPass = $state("");
+  let confirmPass = $state("");
+  let passBusy = $state(false);
+  let passError = $state<string | null>(null);
+  let passDone = $state<string | null>(null);
+
+  const hasPassphrase = $derived(session.status.needsPassphrase);
+
+  async function savePassphrase(remove: boolean) {
+    if (passBusy) return;
+    passError = null;
+    passDone = null;
+    if (!remove && newPass !== confirmPass) {
+      passError = "The two new entries do not match.";
+      return;
+    }
+    passBusy = true;
+    try {
+      await ipc.setVaultPassphrase(
+        hasPassphrase ? curPass : null,
+        remove ? null : newPass,
+      );
+      curPass = "";
+      newPass = "";
+      confirmPass = "";
+      passDone = remove
+        ? "Passphrase removed."
+        : "Passphrase set. You will need it next time you unlock.";
+      await session.refresh();
+    } catch (e) {
+      passError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      passBusy = false;
+    }
+  }
+
   // Clearing this machine after a long absence.
   const PERIODS: { months: number; label: string }[] = [
     { months: 0, label: "Never" },
@@ -279,6 +317,55 @@
           <option value={c.code}>{c.label} ({c.symbol})</option>
         {/each}
       </select>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Vault passphrase</h2>
+    <p class="muted">
+      Without one, the vault decrypts using a key in the Windows credential
+      store, so anyone with this OS account can read your seed. A passphrase
+      mixes into that key, so decrypting then needs both this account and
+      something only you know.
+    </p>
+    <p class="warn-note">
+      It is not recoverable. Forget it and this machine's wallet is unreadable;
+      only your seed phrase brings the funds back. Setting one also turns off
+      the donate-on-inactivity switch, since an unattended sweep cannot ask for
+      it.
+    </p>
+
+    {#if hasPassphrase}
+      <label class="pfield">
+        <span>Current passphrase</span>
+        <input class="mono" type="password" bind:value={curPass} spellcheck="false" />
+      </label>
+    {/if}
+    <label class="pfield">
+      <span>{hasPassphrase ? "New passphrase" : "Passphrase"}</span>
+      <input class="mono" type="password" bind:value={newPass} spellcheck="false" />
+    </label>
+    <label class="pfield">
+      <span>Confirm</span>
+      <input class="mono" type="password" bind:value={confirmPass} spellcheck="false" />
+    </label>
+
+    {#if passError}<p class="kerr">{passError}</p>{/if}
+    {#if passDone}<p class="ok-note">{passDone}</p>{/if}
+
+    <div class="crow">
+      <button
+        class="btn btn-primary"
+        disabled={passBusy || newPass.length === 0}
+        onclick={() => savePassphrase(false)}
+      >
+        {hasPassphrase ? "Change passphrase" : "Set passphrase"}
+      </button>
+      {#if hasPassphrase}
+        <button class="btn" disabled={passBusy} onclick={() => savePassphrase(true)}>
+          Remove
+        </button>
+      {/if}
     </div>
   </section>
 
@@ -758,6 +845,9 @@
   .confirm-box p { margin: 0 0 10px; font-size: 12.5px; }
   .confirm-box input { width: 100%; }
   .crow { display: flex; gap: 8px; margin-top: 11px; }
+  .pfield { display: block; margin-top: 12px; }
+  .pfield span { display: block; margin-bottom: 5px; font-size: 12.5px; color: var(--text-muted); }
+  .pfield input { width: 100%; }
   .crow .btn { flex: 1; }
   .kerr { margin: 8px 0 0 !important; color: var(--danger); font-size: 12px; }
   .ok-note { margin: 10px 0 0 !important; color: var(--ok); font-size: 12px; }
