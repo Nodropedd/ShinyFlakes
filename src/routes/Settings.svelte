@@ -283,6 +283,40 @@
   </section>
 
   <section class="card">
+    <h2>Route through Tor</h2>
+    <p class="muted">
+      Every balance, price and history lookup goes to a public server that
+      otherwise sees this machine's address alongside the wallet addresses it
+      asks about. Tor hides the first half: the server sees a Tor exit, not you.
+      It does nothing about what the addresses reveal on chain, which is a
+      separate matter, but it is the largest network leak.
+    </p>
+
+    {#if wallet.torStarting}
+      <p class="hint-note">Connecting to Tor. The first time also downloads it.</p>
+    {:else if wallet.torRouting}
+      <p class="ok-note">
+        Routing through Tor. Lookups no longer reveal your address.
+        <button class="inline" onclick={() => wallet.stopTor()}>Turn off</button>
+      </p>
+    {:else}
+      <div class="control">
+        <button class="btn btn-primary" onclick={() => wallet.startTor()}>
+          Route through Tor
+        </button>
+      </div>
+      <p class="hint-note">
+        First time only: about 20 MB from torproject.org, checked against a hash
+        built into this program. Connecting then takes a moment.
+      </p>
+    {/if}
+
+    {#if wallet.torError}
+      <p class="kerr">{wallet.torError}</p>
+    {/if}
+  </section>
+
+  <section class="card">
     <h2>Monero wallet</h2>
     <p class="muted">
       Monero balances cannot be read from an address, and spending needs ring

@@ -69,6 +69,12 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             ];
           case "next_receive_address":
             return { asset: "BTC", address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", index: 4, rotates: true };
+          case "tor_state":
+            return { installed: false, running: false, routing: false, version: "15.0.22" };
+          case "tor_start":
+            return { installed: true, running: true, routing: true, version: "15.0.22" };
+          case "tor_stop":
+            return { installed: true, running: false, routing: false, version: "15.0.22" };
           case "inactivity_check":
           case "inactivity_set_months":
           case "inactivity_set_action":

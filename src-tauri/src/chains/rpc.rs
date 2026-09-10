@@ -74,11 +74,33 @@ impl AssetBalance {
     }
 }
 
+/// The client every remote lookup uses.
+///
+/// When Tor routing is on, requests go through the local Tor proxy, so the
+/// endpoint sees a Tor exit rather than this machine. When it is off, they go
+/// out directly. Tor is checked per call, so the toggle takes effect at once.
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
         // Deliberately generic. Announcing the wallet by name in every request
         // would hand the endpoint operator an easy fingerprint.
+        .user_agent("Mozilla/5.0");
+
+    if crate::tor::routing() {
+        builder = builder.proxy(crate::tor::proxy()?);
+    }
+
+    builder.build().map_err(|e| WalletError::Network(e.to_string()))
+}
+
+/// A client that never goes through Tor, whatever the setting.
+///
+/// Used to fetch Tor itself, since the proxy cannot carry the download that
+/// installs it, and for the local Monero download where a large transfer over
+/// Tor would be needlessly slow.
+pub fn plain_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(900))
         .user_agent("Mozilla/5.0")
         .build()
         .map_err(|e| WalletError::Network(e.to_string()))

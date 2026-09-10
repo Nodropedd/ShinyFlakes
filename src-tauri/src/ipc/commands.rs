@@ -1257,6 +1257,54 @@ pub fn donation_addresses() -> Vec<crate::donation::Donation> {
     crate::donation::addresses()
 }
 
+/// Whether Tor is installed, running, and carrying requests.
+#[tauri::command]
+pub fn tor_state(state: State<AppState>) -> crate::tor::TorState {
+    crate::tor::state(&state.data_dir, state.tor_running())
+}
+
+/// Installs Tor if needed, starts it, waits for it to connect, then routes
+/// every remote lookup through it. Slow the first time: it downloads the Tor
+/// bundle and then builds a circuit.
+#[tauri::command]
+pub async fn tor_start(state: State<'_, AppState>) -> Result<crate::tor::TorState> {
+    let data_dir = state.data_dir.clone();
+
+    crate::tor::install(&data_dir).await?;
+
+    // Reuse a Tor already answering rather than starting a second that could
+    // not bind the port.
+    if crate::tor::proxy_alive().await {
+        crate::tor::set_routing(true);
+        return Ok(crate::tor::state(&data_dir, state.tor_running()));
+    }
+
+    state.stop_tor();
+    let child = crate::tor::spawn(&data_dir)?;
+    {
+        let mut guard = state
+            .tor
+            .lock()
+            .map_err(|_| WalletError::Storage("tor lock poisoned".into()))?;
+        *guard = Some(child);
+    }
+
+    // Routing is switched on only after a circuit exists, so requests are
+    // never sent to a proxy that cannot yet carry them.
+    crate::tor::wait_until_ready().await?;
+    crate::tor::set_routing(true);
+
+    Ok(crate::tor::state(&data_dir, state.tor_running()))
+}
+
+/// Stops routing through Tor and shuts the process down.
+#[tauri::command]
+pub fn tor_stop(state: State<AppState>) -> crate::tor::TorState {
+    crate::tor::set_routing(false);
+    state.stop_tor();
+    crate::tor::state(&state.data_dir, false)
+}
+
 /// Whether Monero is installed, set up, and running.
 ///
 /// Running is decided by asking the port, not by whether this session started

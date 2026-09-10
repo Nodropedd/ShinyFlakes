@@ -20,6 +20,7 @@ const THEME_KEY = "shinyflakes.theme";
 const ACCENT_KEY = "shinyflakes.accent";
 const MONERO_KEY = "shinyflakes.moneroEndpoint";
 const MONERO_DAEMON_KEY = "shinyflakes.moneroDaemon";
+const TOR_KEY = "shinyflakes.tor";
 
 /// Public node used until someone points this at their own.
 export const DEFAULT_MONERO_DAEMON = "xmr-node.cakewallet.com:18081";
@@ -91,6 +92,15 @@ class Settings {
   setMoneroDaemon(daemon: string) {
     this.moneroDaemon = daemon.trim() || DEFAULT_MONERO_DAEMON;
     write(MONERO_DAEMON_KEY, this.moneroDaemon);
+  }
+
+  /** Whether outbound lookups route through Tor. Remembered, so it comes back
+   *  up on the next unlock rather than the leak silently reopening. */
+  torEnabled = $state<boolean>(read(TOR_KEY, "no") === "yes");
+
+  setTorEnabled(on: boolean) {
+    this.torEnabled = on;
+    write(TOR_KEY, on ? "yes" : "no");
   }
 
   /** Pushes theme and accent onto the document. Called once at startup and

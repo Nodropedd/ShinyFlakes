@@ -184,6 +184,16 @@ export interface Donation {
   host: AssetId | null;
 }
 
+export interface TorState {
+  /** The Tor binary is present and verified. */
+  installed: boolean;
+  /** A Tor process is running. */
+  running: boolean;
+  /** Requests are being routed through it. */
+  routing: boolean;
+  version: string;
+}
+
 export interface Inactivity {
   /** Unix seconds, absent on a machine that has never been used. */
   lastSeen: number | null;
@@ -318,6 +328,15 @@ export const ipc = {
 
   /** Where a tip goes, per asset. Fixed and compiled into the program. */
   donationAddresses: () => call<Donation[]>("donation_addresses"),
+
+  /** Whether Tor is installed, running and carrying requests. */
+  torState: () => call<TorState>("tor_state"),
+
+  /** Installs, starts and routes through Tor. Slow the first time. */
+  torStart: () => call<TorState>("tor_start"),
+
+  /** Stops routing and shuts Tor down. */
+  torStop: () => call<TorState>("tor_stop"),
 
   /** Whether Monero is installed, set up and running. */
   moneroSetupState: () => call<MoneroSetup>("monero_setup_state"),

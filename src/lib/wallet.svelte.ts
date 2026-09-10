@@ -17,7 +17,17 @@ import type { CurrencyCode } from "./settings.svelte";
 import { settings } from "./settings.svelte";
 
 const CONSENT_KEY = "shinyflakes.network";
-const REFRESH_MS = 60_000;
+
+// Refresh on a jittered interval rather than a fixed beat. A request landing
+// at a public endpoint every exact 60 seconds is itself a fingerprint that
+// ties separate lookups to one wallet; a random gap in a range breaks that
+// regularity without polling so often it becomes a burden.
+const REFRESH_MIN_MS = 45_000;
+const REFRESH_MAX_MS = 90_000;
+
+function nextDelay() {
+  return REFRESH_MIN_MS + Math.random() * (REFRESH_MAX_MS - REFRESH_MIN_MS);
+}
 
 function stored(key: string) {
   try {
@@ -42,12 +52,16 @@ class Wallet {
   moneroStarting = $state(false);
   moneroError = $state<string | null>(null);
 
+  torRouting = $state(false);
+  torStarting = $state(false);
+  torError = $state<string | null>(null);
+
   connected = $state(false);
   loading = $state(false);
   error = $state<string | null>(null);
   lastRefresh = $state<Date | null>(null);
 
-  #timer: ReturnType<typeof setInterval> | undefined;
+  #timer: ReturnType<typeof setTimeout> | undefined;
 
   async loadAddresses() {
     try {
@@ -69,11 +83,48 @@ class Wallet {
       void this.startMonero();
     }
 
+    // Bring Tor up before the first lookup, so balances are never fetched in
+    // the clear on a launch where routing was meant to be on.
+    void this.#beginNetwork();
+  }
+
+  async #beginNetwork() {
+    if (settings.torEnabled) {
+      await this.startTor();
+    }
     if (stored(CONSENT_KEY) === "yes") {
       this.connected = true;
-      void this.refresh();
+      await this.refresh();
       this.#schedule();
     }
+  }
+
+  /** Brings Tor up and routes through it. Remembered across launches. */
+  async startTor() {
+    if (this.torStarting) return;
+    this.torStarting = true;
+    this.torError = null;
+    try {
+      const s = await ipc.torStart();
+      this.torRouting = s.routing;
+      settings.setTorEnabled(true);
+      if (s.routing && this.connected) await this.refresh();
+    } catch (e) {
+      this.torRouting = false;
+      this.torError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      this.torStarting = false;
+    }
+  }
+
+  async stopTor() {
+    try {
+      const s = await ipc.torStop();
+      this.torRouting = s.routing;
+    } catch (e) {
+      this.torError = (e as { message?: string }).message ?? String(e);
+    }
+    settings.setTorEnabled(false);
   }
 
   /** Brings the Monero daemon up, adopting one that is already running. */
@@ -105,13 +156,19 @@ class Wallet {
   }
 
   stop() {
-    clearInterval(this.#timer);
+    clearTimeout(this.#timer);
     this.#timer = undefined;
   }
 
+  // A self-rescheduling timeout rather than a fixed interval, so each gap is
+  // drawn fresh. The refresh runs, then the next one is booked.
   #schedule() {
-    clearInterval(this.#timer);
-    this.#timer = setInterval(() => void this.refresh(), REFRESH_MS);
+    clearTimeout(this.#timer);
+    this.#timer = setTimeout(() => {
+      void this.refresh().finally(() => {
+        if (this.connected) this.#schedule();
+      });
+    }, nextDelay());
   }
 
   // Prices are quoted in one currency, so switching invalidates them all.

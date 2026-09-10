@@ -7,6 +7,7 @@ mod ipc;
 mod keychain;
 mod session;
 mod store;
+mod tor;
 
 pub use error::WalletError;
 
@@ -76,6 +77,9 @@ pub fn run() {
             ipc::monero_setup_run,
             ipc::monero_stop,
             ipc::donation_addresses,
+            ipc::tor_state,
+            ipc::tor_start,
+            ipc::tor_stop,
             ipc::inactivity_check,
             ipc::inactivity_set_months,
             ipc::inactivity_set_action,
@@ -87,7 +91,9 @@ pub fn run() {
             // The Monero daemon is a child process. Without this it would
             // outlive the window that started it, holding an open wallet.
             if let tauri::RunEvent::Exit = event {
-                app.state::<session::AppState>().stop_monero();
+                let state = app.state::<session::AppState>();
+                state.stop_monero();
+                state.stop_tor();
             }
         });
 }

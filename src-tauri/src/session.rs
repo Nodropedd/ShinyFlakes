@@ -25,6 +25,10 @@ pub struct AppState {
     /// Monero's wallet daemon while it is running. Stopped on lock, on logout
     /// and on exit, so it never outlives the session that started it.
     pub monero: Mutex<Option<std::process::Child>>,
+    /// The Tor process while it is running. Killed on exit, like the daemon.
+    /// It is not tied to lock, since browsing balances is not privileged and
+    /// tearing Tor down on every lock would make it slow to come back.
+    pub tor: Mutex<Option<std::process::Child>>,
 }
 
 impl AppState {
@@ -34,6 +38,7 @@ impl AppState {
             unlocked: Mutex::new(None),
             data_dir,
             monero: Mutex::new(None),
+            tor: Mutex::new(None),
         }
     }
 
@@ -45,6 +50,20 @@ impl AppState {
                 let _ = child.wait();
             }
         }
+    }
+
+    /// Stops the Tor process, if this session started one.
+    pub fn stop_tor(&self) {
+        if let Ok(mut guard) = self.tor.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    pub fn tor_running(&self) -> bool {
+        self.tor.lock().map(|g| g.is_some()).unwrap_or(false)
     }
 
     pub fn monero_running(&self) -> bool {
