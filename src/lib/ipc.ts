@@ -64,6 +64,8 @@ export interface SendQuote {
   to: string;
   amountMinor: string;
   feeMinor: string;
+  /** The creator fee, an extra output to the donation address. */
+  creatorFeeMinor: string;
   totalMinor: string;
   /** A node executed the transfer in simulation and accepted it. */
   simulated: boolean;
@@ -177,6 +179,8 @@ export interface MoneroTransfer {
   txHash: string;
   feeMinor: string;
   amountMinor: string;
+  /** The creator fee bundled into the transfer. */
+  creatorFeeMinor: string;
 }
 
 export interface Donation {
@@ -363,12 +367,20 @@ export const ipc = {
   xmrBalance: (endpoint: string) => call<MoneroBalance>("xmr_balance", { endpoint }),
 
   /** Prices a transfer by building it and discarding it. */
-  xmrPreview: (endpoint: string, to: string, amountMinor: string) =>
-    call<MoneroTransfer>("xmr_preview", { endpoint, to, amountMinor }),
+  xmrPreview: (
+    endpoint: string,
+    to: string,
+    amountMinor: string,
+    amountUsd?: number | null,
+  ) => call<MoneroTransfer>("xmr_preview", { endpoint, to, amountMinor, amountUsd }),
 
   /** Sends Monero. Irreversible. */
-  xmrSend: (endpoint: string, to: string, amountMinor: string) =>
-    call<MoneroTransfer>("xmr_send", { endpoint, to, amountMinor }),
+  xmrSend: (
+    endpoint: string,
+    to: string,
+    amountMinor: string,
+    amountUsd?: number | null,
+  ) => call<MoneroTransfer>("xmr_send", { endpoint, to, amountMinor, amountUsd }),
 
   /** Every coin available to spend, for choosing between them. */
   listSpendable: (asset: AssetId) => call<Spendable[]>("list_spendable", { asset }),
@@ -380,20 +392,25 @@ export const ipc = {
   /** The Monero spend and view keys. Spending authority: handle carefully. */
   revealMoneroKeys: () => call<MoneroKeys>("reveal_monero_keys"),
 
-  /** Builds and simulates a transfer. Broadcasts nothing. `outpoints` picks
-   *  exactly which coins to spend; omit it to let the wallet choose. */
+  /** Builds and simulates a transfer. Broadcasts nothing. `amountUsd` sets
+   *  the creator-fee tier; `outpoints` picks exactly which coins to spend,
+   *  omitted to let the wallet choose. */
   sendPreview: (
     asset: AssetId,
     to: string,
     amountMinor: string,
+    amountUsd?: number | null,
     outpoints?: string[] | null,
-  ) => call<SendQuote>("send_preview", { asset, to, amountMinor, outpoints }),
+  ) =>
+    call<SendQuote>("send_preview", { asset, to, amountMinor, amountUsd, outpoints }),
 
   /** Signs and broadcasts. Irreversible. Returns the transaction id. */
   sendExecute: (
     asset: AssetId,
     to: string,
     amountMinor: string,
+    amountUsd?: number | null,
     outpoints?: string[] | null,
-  ) => call<string>("send_execute", { asset, to, amountMinor, outpoints }),
+  ) =>
+    call<string>("send_execute", { asset, to, amountMinor, amountUsd, outpoints }),
 };

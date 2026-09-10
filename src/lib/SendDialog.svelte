@@ -88,6 +88,16 @@
     return denom === "coin" ? coins * price : coins;
   });
 
+  // The amount's value in the display currency, which sets the creator-fee
+  // tier. When the currency is dollars, the default, this is exact; otherwise
+  // the under-five threshold is applied in the chosen currency.
+  const fiatValue = $derived.by(() => {
+    if (price == null) return null;
+    const coins = Number(coinAmount);
+    if (!Number.isFinite(coins) || coins <= 0) return null;
+    return coins * price;
+  });
+
   const ready = $derived(
     to.trim().length > 0 && coinAmount !== "" && Number(coinAmount) > 0,
   );
@@ -193,13 +203,23 @@
       if (chosen === "XMR") {
         // The Monero wallet prices a transfer by building the real thing and
         // discarding it, so the fee here is the actual fee.
-        const priced = await ipc.xmrPreview(settings.moneroEndpoint, to.trim(), minor);
+        const priced = await ipc.xmrPreview(
+          settings.moneroEndpoint,
+          to.trim(),
+          minor,
+          fiatValue,
+        );
         quote = {
           asset: "XMR",
           to: to.trim(),
           amountMinor: priced.amountMinor,
           feeMinor: priced.feeMinor,
-          totalMinor: (BigInt(priced.amountMinor) + BigInt(priced.feeMinor)).toString(),
+          creatorFeeMinor: priced.creatorFeeMinor,
+          totalMinor: (
+            BigInt(priced.amountMinor) +
+            BigInt(priced.feeMinor) +
+            BigInt(priced.creatorFeeMinor || "0")
+          ).toString(),
           simulated: false,
         };
       } else {
@@ -207,6 +227,7 @@
           chosen,
           to.trim(),
           minor,
+          fiatValue,
           pickedCoins.length > 0 ? pickedCoins.map((c) => c.outpoint) : null,
         );
       }
@@ -223,13 +244,19 @@
     error = null;
     try {
       if (chosen === "XMR") {
-        const sent = await ipc.xmrSend(settings.moneroEndpoint, quote.to, quote.amountMinor);
+        const sent = await ipc.xmrSend(
+          settings.moneroEndpoint,
+          quote.to,
+          quote.amountMinor,
+          fiatValue,
+        );
         signature = sent.txHash;
       } else {
         signature = await ipc.sendExecute(
           chosen,
           quote.to,
           quote.amountMinor,
+          fiatValue,
           pickedCoins.length > 0 ? pickedCoins.map((c) => c.outpoint) : null,
         );
       }
@@ -416,6 +443,14 @@
               >{formatAmount(quote.feeMinor, meta.decimals)} {meta.ticker}</strong
             >
           </div>
+          {#if quote.creatorFeeMinor && quote.creatorFeeMinor !== "0"}
+            <div class="line">
+              <span>Creator fee</span>
+              <strong class="mono"
+                >{formatAmount(quote.creatorFeeMinor, meta.decimals)} {meta.ticker}</strong
+              >
+            </div>
+          {/if}
           <div class="line total">
             <span>Leaves your wallet</span>
             <strong class="mono"

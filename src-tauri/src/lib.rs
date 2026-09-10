@@ -2,6 +2,7 @@ mod chains;
 mod crypto;
 mod donation;
 mod error;
+mod fee;
 mod inactivity;
 mod ipc;
 mod keychain;

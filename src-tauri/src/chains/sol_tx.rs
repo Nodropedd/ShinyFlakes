@@ -71,7 +71,23 @@ pub fn parse_address(address: &str) -> Result<[u8; 32]> {
 /// writable non-signers, then read-only. Here that is sender, recipient,
 /// system program.
 pub fn build_message(from: &[u8; 32], to: &[u8; 32], lamports: u64, blockhash: &[u8; 32]) -> Vec<u8> {
+    build_message_multi(from, &[(*to, lamports)], blockhash)
+}
+
+/// A transfer message paying one or more recipients from the same account.
+///
+/// One recipient is an ordinary send; two carry the creator fee alongside it.
+/// Account order is fixed: the signer, then each recipient, then the System
+/// program last. Each recipient gets its own transfer instruction.
+pub fn build_message_multi(
+    from: &[u8; 32],
+    dests: &[([u8; 32], u64)],
+    blockhash: &[u8; 32],
+) -> Vec<u8> {
     let mut msg = Vec::new();
+
+    let num_accounts = 1 + dests.len() + 1; // signer + recipients + system
+    let system_index = (num_accounts - 1) as u8;
 
     // Header: one required signature, no read-only signers, one read-only
     // unsigned account (the System program).
@@ -79,25 +95,28 @@ pub fn build_message(from: &[u8; 32], to: &[u8; 32], lamports: u64, blockhash: &
     msg.push(0);
     msg.push(1);
 
-    push_compact_u16(&mut msg, 3);
+    push_compact_u16(&mut msg, num_accounts as u16);
     msg.extend_from_slice(from);
-    msg.extend_from_slice(to);
+    for (to, _) in dests {
+        msg.extend_from_slice(to);
+    }
     msg.extend_from_slice(&SYSTEM_PROGRAM);
 
     msg.extend_from_slice(blockhash);
 
-    // One instruction.
-    push_compact_u16(&mut msg, 1);
-    msg.push(2); // program is account index 2
-    push_compact_u16(&mut msg, 2);
-    msg.push(0); // from
-    msg.push(1); // to
+    push_compact_u16(&mut msg, dests.len() as u16);
+    for (i, (_, lamports)) in dests.iter().enumerate() {
+        msg.push(system_index); // program is the System account
+        push_compact_u16(&mut msg, 2);
+        msg.push(0); // from, the signer
+        msg.push((1 + i) as u8); // this recipient
 
-    let mut data = Vec::with_capacity(12);
-    data.extend_from_slice(&TRANSFER_INSTRUCTION.to_le_bytes());
-    data.extend_from_slice(&lamports.to_le_bytes());
-    push_compact_u16(&mut msg, data.len() as u16);
-    msg.extend_from_slice(&data);
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&TRANSFER_INSTRUCTION.to_le_bytes());
+        data.extend_from_slice(&lamports.to_le_bytes());
+        push_compact_u16(&mut msg, data.len() as u16);
+        msg.extend_from_slice(&data);
+    }
 
     msg
 }
@@ -124,13 +143,49 @@ pub fn signed_transfer(
     }
 
     let message = build_message(&from, &to, lamports, blockhash);
-    let signature = key.sign(&message);
+    Ok(sign_message(&key, &message))
+}
 
+/// A transfer that also pays the creator fee, in one transaction.
+///
+/// When the fee is zero this is just the plain single transfer, so the caller
+/// need not special-case it.
+pub fn signed_transfer_with_fee(
+    seed: &[u8],
+    to: &str,
+    lamports: u64,
+    fee_to: &str,
+    fee_lamports: u64,
+    blockhash: &[u8; 32],
+) -> Result<Vec<u8>> {
+    let key = signing_key(seed);
+    let from = key.verifying_key().to_bytes();
+    let to = parse_address(to)?;
+    if from == to {
+        return Err(bad("recipient", "sending to your own address"));
+    }
+
+    let mut dests = vec![(to, lamports)];
+    if fee_lamports > 0 {
+        let fee_to = parse_address(fee_to)?;
+        // Paying the fee address as the recipient is caught earlier, but guard
+        // against a degenerate two-output-to-one-account message anyway.
+        if fee_to != to {
+            dests.push((fee_to, fee_lamports));
+        }
+    }
+
+    let message = build_message_multi(&from, &dests, blockhash);
+    Ok(sign_message(&key, &message))
+}
+
+fn sign_message(key: &SigningKey, message: &[u8]) -> Vec<u8> {
+    let signature = key.sign(message);
     let mut tx = Vec::with_capacity(1 + 64 + message.len());
     push_compact_u16(&mut tx, 1);
     tx.extend_from_slice(&signature.to_bytes());
-    tx.extend_from_slice(&message);
-    Ok(tx)
+    tx.extend_from_slice(message);
+    tx
 }
 
 #[cfg(test)]
@@ -183,6 +238,39 @@ mod tests {
         let seed = test_seed();
         let own = bs58::encode(signing_key(&seed).verifying_key().to_bytes()).into_string();
         assert!(signed_transfer(&seed, &own, 1, &[7u8; 32]).is_err());
+    }
+
+    #[test]
+    fn a_two_recipient_message_has_four_accounts_and_two_instructions() {
+        let from = [1u8; 32];
+        let to = [2u8; 32];
+        let fee = [3u8; 32];
+        let blockhash = [4u8; 32];
+        let msg = build_message_multi(&from, &[(to, 900), (fee, 100)], &blockhash);
+
+        // Header, then four accounts: signer, two recipients, System last.
+        assert_eq!(&msg[0..3], &[1, 0, 1]);
+        assert_eq!(msg[3], 4);
+        assert_eq!(&msg[4..36], &from);
+        assert_eq!(&msg[36..68], &to);
+        assert_eq!(&msg[68..100], &fee);
+        assert_eq!(&msg[100..132], &SYSTEM_PROGRAM);
+        // Blockhash, then a count of two instructions.
+        assert_eq!(&msg[132..164], &blockhash);
+        assert_eq!(msg[164], 2);
+    }
+
+    #[test]
+    fn one_recipient_still_matches_the_original_layout() {
+        // The single-recipient wrapper must be byte-identical to the layout
+        // the BIP-tested path relied on: three accounts, one instruction.
+        let from = [7u8; 32];
+        let to = [8u8; 32];
+        let blockhash = [9u8; 32];
+        let a = build_message(&from, &to, 5, &blockhash);
+        let b = build_message_multi(&from, &[(to, 5)], &blockhash);
+        assert_eq!(a, b);
+        assert_eq!(a[3], 3, "three accounts");
     }
 
     #[test]

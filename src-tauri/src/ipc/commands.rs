@@ -206,9 +206,21 @@ pub struct SendQuote {
     pub to: String,
     pub amount_minor: String,
     pub fee_minor: String,
+    /// The creator fee, an extra output to the donation address. Zero when the
+    /// amount is tiny or the recipient is the fee address itself.
+    pub creator_fee_minor: String,
     pub total_minor: String,
     /// True when a node executed the transfer in simulation and accepted it.
     pub simulated: bool,
+}
+
+/// The creator fee for a send, in the asset's smallest unit, using the
+/// donation address for that asset.
+fn creator_fee_minor(asset: &str, amount_minor: u128, usd: Option<f64>, to: &str) -> u128 {
+    match donation_for(asset) {
+        Some(addr) => crate::fee::resolve(amount_minor, usd, to, &addr),
+        None => 0,
+    }
 }
 
 fn seed_copy(state: &State<AppState>) -> Result<[u8; 64]> {
@@ -418,23 +430,29 @@ pub async fn send_preview(
     asset: String,
     to: String,
     amount_minor: String,
+    amount_usd: Option<f64>,
     outpoints: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<SendQuote> {
     let amount = parse_minor(&amount_minor)?;
     let seed = seed_copy(&state)?;
+    let creator_fee = creator_fee_minor(&asset, amount as u128, amount_usd, &to);
 
     if let Some(chain) = btc_chain(&asset) {
         let (keyring, utxos, rate) = btc_context(&seed, chain).await?;
-        let dest = chains::btc_tx::script_pubkey_for(&to, chain)?;
         let change = chains::btc_tx::own_script(&keyring[0].pubkey_hash);
+        // A fee output below the dust limit would be rejected, so it is
+        // dropped rather than charged.
+        let fee_out = btc_fee_output(&asset, chain, creator_fee)?;
+        let creator_fee = fee_out.as_ref().map(|o| o.value).unwrap_or(0);
+        let fixed = btc_fixed_outputs(&to, chain, amount, fee_out)?;
 
         let plan = match &outpoints {
             Some(chosen) => {
                 let picked = pick_outputs(&utxos, chosen)?;
-                chains::btc_tx::plan_with(&picked, dest, amount, change, rate)?
+                chains::btc_tx::plan_with_outputs(&picked, fixed, change, rate)?
             }
-            None => chains::btc_tx::select(&utxos, dest, amount, change, rate)?,
+            None => chains::btc_tx::select_outputs(&utxos, fixed, change, rate)?,
         };
 
         return Ok(SendQuote {
@@ -442,7 +460,8 @@ pub async fn send_preview(
             to,
             amount_minor: amount.to_string(),
             fee_minor: plan.fee.to_string(),
-            total_minor: (amount as u128 + plan.fee as u128).to_string(),
+            creator_fee_minor: creator_fee.to_string(),
+            total_minor: (amount as u128 + plan.fee as u128 + creator_fee as u128).to_string(),
             // No node runs this in advance. Bitcoin has no simulation endpoint
             // the way Solana does, so the plan is checked locally only.
             simulated: false,
@@ -452,14 +471,15 @@ pub async fn send_preview(
     if asset == "ETH" {
         let wei = parse_wei(&amount_minor)?;
         let (_keys, _address, balance, max_fee, _tip) = eth_context(&seed).await?;
-        let to_address = chains::eth::parse_address(&to)?;
-        let _ = to_address;
+        chains::eth::parse_address(&to)?;
 
-        let cost = max_fee * chains::eth::TRANSFER_GAS as u128;
-        if wei + cost > balance {
+        let per_tx_gas = max_fee * chains::eth::TRANSFER_GAS as u128;
+        // The fee is a second transaction, so it costs gas of its own.
+        let gas = if creator_fee > 0 { per_tx_gas * 2 } else { per_tx_gas };
+        let needed = wei + creator_fee + gas;
+        if needed > balance {
             return Err(WalletError::Funds(format!(
-                "This needs {} wei including up to {cost} of gas, but the account holds {balance}.",
-                wei + cost
+                "This needs {needed} wei including up to {gas} of gas, but the account holds {balance}."
             )));
         }
 
@@ -467,10 +487,9 @@ pub async fn send_preview(
             asset,
             to,
             amount_minor: wei.to_string(),
-            fee_minor: cost.to_string(),
-            total_minor: (wei + cost).to_string(),
-            // The fee shown is the ceiling. Anything above the base fee at
-            // inclusion time is refunded, so the real cost is usually lower.
+            fee_minor: gas.to_string(),
+            creator_fee_minor: creator_fee.to_string(),
+            total_minor: needed.to_string(),
             simulated: false,
         });
     }
@@ -481,19 +500,66 @@ pub async fn send_preview(
         )));
     }
 
-    let fee = check_affordable(&seed, amount).await?;
+    let creator_fee = creator_fee as u64;
+    // The rent and balance checks must see everything leaving the account.
+    let network_fee = check_affordable(&seed, amount + creator_fee).await?;
     let blockhash = chains::rpc::sol_latest_blockhash().await?;
-    let tx = chains::sol_tx::signed_transfer(&seed, &to, amount, &blockhash)?;
+    let fee_to = donation_for("SOL").unwrap_or_default();
+    let tx = chains::sol_tx::signed_transfer_with_fee(
+        &seed, &to, amount, &fee_to, creator_fee, &blockhash,
+    )?;
     chains::rpc::sol_simulate(&tx).await?;
 
     Ok(SendQuote {
         asset,
         to,
         amount_minor: amount.to_string(),
-        fee_minor: fee.to_string(),
-        total_minor: (amount as u128 + fee as u128).to_string(),
+        fee_minor: network_fee.to_string(),
+        creator_fee_minor: creator_fee.to_string(),
+        total_minor: (amount as u128 + network_fee as u128 + creator_fee as u128).to_string(),
         simulated: true,
     })
+}
+
+/// The Bitcoin-style fee output, or none when the fee is below the dust limit
+/// and so would make the transaction invalid.
+fn btc_fee_output(
+    asset: &str,
+    chain: chains::btc_tx::Chain,
+    creator_fee: u128,
+) -> Result<Option<chains::btc_tx::Output>> {
+    if creator_fee < chains::btc_tx::DUST as u128 {
+        return Ok(None);
+    }
+    let addr = donation_for(asset).ok_or_else(|| {
+        WalletError::Unsupported(format!("no donation address for {asset}"))
+    })?;
+    Ok(Some(chains::btc_tx::Output {
+        script: chains::btc_tx::script_pubkey_for(&addr, chain)?,
+        value: creator_fee as u64,
+    }))
+}
+
+/// The destination output, plus the fee output when there is one.
+fn btc_fixed_outputs(
+    to: &str,
+    chain: chains::btc_tx::Chain,
+    amount: u64,
+    fee_out: Option<chains::btc_tx::Output>,
+) -> Result<Vec<chains::btc_tx::Output>> {
+    if amount < chains::btc_tx::DUST {
+        return Err(WalletError::Funds(format!(
+            "{amount} is below the dust limit, so the network would reject it."
+        )));
+    }
+    let mut outputs = vec![chains::btc_tx::Output {
+        script: chains::btc_tx::script_pubkey_for(to, chain)?,
+        value: amount,
+    }];
+    if let Some(fee) = fee_out {
+        outputs.push(fee);
+    }
+    Ok(outputs)
 }
 
 /// Signs and broadcasts. Irreversible once the network accepts it, so the UI
@@ -503,26 +569,29 @@ pub async fn send_execute(
     asset: String,
     to: String,
     amount_minor: String,
+    amount_usd: Option<f64>,
     outpoints: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<String> {
     let amount = parse_minor(&amount_minor)?;
     let seed = seed_copy(&state)?;
+    let creator_fee = creator_fee_minor(&asset, amount as u128, amount_usd, &to);
 
     if let Some(chain) = btc_chain(&asset) {
         // Rebuilt from scratch rather than reusing the preview: the set of
         // spendable outputs may have changed, and signing a stale plan risks
         // spending something already gone.
         let (keyring, utxos, rate) = btc_context(&seed, chain).await?;
-        let dest = chains::btc_tx::script_pubkey_for(&to, chain)?;
         let change = chains::btc_tx::own_script(&keyring[0].pubkey_hash);
+        let fee_out = btc_fee_output(&asset, chain, creator_fee)?;
+        let fixed = btc_fixed_outputs(&to, chain, amount, fee_out)?;
 
         let plan = match &outpoints {
             Some(chosen) => {
                 let picked = pick_outputs(&utxos, chosen)?;
-                chains::btc_tx::plan_with(&picked, dest, amount, change, rate)?
+                chains::btc_tx::plan_with_outputs(&picked, fixed, change, rate)?
             }
-            None => chains::btc_tx::select(&utxos, dest, amount, change, rate)?,
+            None => chains::btc_tx::select_outputs(&utxos, fixed, change, rate)?,
         };
 
         let signed = chains::btc_tx::build_signed(&keyring, &plan.inputs, &plan.outputs, 0)?;
@@ -542,16 +611,18 @@ pub async fn send_execute(
         let wei = parse_wei(&amount_minor)?;
         let (keys, address, balance, max_fee, tip) = eth_context(&seed).await?;
 
-        let cost = max_fee * chains::eth::TRANSFER_GAS as u128;
-        if wei + cost > balance {
+        let per_tx_gas = max_fee * chains::eth::TRANSFER_GAS as u128;
+        let gas = if creator_fee > 0 { per_tx_gas * 2 } else { per_tx_gas };
+        if wei + creator_fee + gas > balance {
             return Err(WalletError::Funds(format!(
                 "This needs {} wei including gas, but the account holds {balance}.",
-                wei + cost
+                wei + creator_fee + gas
             )));
         }
 
-        let transfer = chains::eth::Transfer {
-            nonce: chains::rpc::eth_nonce(&address).await?,
+        let nonce = chains::rpc::eth_nonce(&address).await?;
+        let main = chains::eth::Transfer {
+            nonce,
             max_priority_fee: tip,
             max_fee,
             gas_limit: chains::eth::TRANSFER_GAS,
@@ -559,9 +630,31 @@ pub async fn send_execute(
             value: wei,
             data: Vec::new(),
         };
+        let signed = chains::eth::sign(&keys, &main)?;
+        let id = chains::rpc::eth_broadcast(&signed).await?;
 
-        let signed = chains::eth::sign(&keys, &transfer)?;
-        return chains::rpc::eth_broadcast(&signed).await;
+        // Ethereum cannot pay two recipients in one transfer, so the fee rides
+        // a second transaction at the next nonce. The main send has already
+        // gone; a failure here loses only the fee, not the user's payment.
+        if creator_fee > 0 {
+            if let Some(fee_to) = donation_for("ETH") {
+                if let Ok(fee_addr) = chains::eth::parse_address(&fee_to) {
+                    let fee_tx = chains::eth::Transfer {
+                        nonce: nonce + 1,
+                        max_priority_fee: tip,
+                        max_fee,
+                        gas_limit: chains::eth::TRANSFER_GAS,
+                        to: fee_addr,
+                        value: creator_fee,
+                        data: Vec::new(),
+                    };
+                    if let Ok(fee_signed) = chains::eth::sign(&keys, &fee_tx) {
+                        let _ = chains::rpc::eth_broadcast(&fee_signed).await;
+                    }
+                }
+            }
+        }
+        return Ok(id);
     }
 
     if asset != "SOL" {
@@ -570,12 +663,16 @@ pub async fn send_execute(
         )));
     }
 
-    check_affordable(&seed, amount).await?;
+    let creator_fee = creator_fee as u64;
+    check_affordable(&seed, amount + creator_fee).await?;
 
     // A fresh blockhash and one more simulation: the balance or the network
     // may have moved since the preview, and it costs nothing to check again.
     let blockhash = chains::rpc::sol_latest_blockhash().await?;
-    let tx = chains::sol_tx::signed_transfer(&seed, &to, amount, &blockhash)?;
+    let fee_to = donation_for("SOL").unwrap_or_default();
+    let tx = chains::sol_tx::signed_transfer_with_fee(
+        &seed, &to, amount, &fee_to, creator_fee, &blockhash,
+    )?;
     chains::rpc::sol_simulate(&tx).await?;
 
     chains::rpc::sol_broadcast(&tx).await
@@ -791,6 +888,8 @@ pub async fn consolidate_preview(asset: String, state: State<'_, AppState>) -> R
         to: chains::btc_tx::own_address(&keyring[0].pubkey_hash, chain)?,
         amount_minor: value.to_string(),
         fee_minor: plan.fee.to_string(),
+        // Consolidating is a move to your own address, so no creator fee.
+        creator_fee_minor: "0".to_string(),
         total_minor: (value as u128 + plan.fee as u128).to_string(),
         simulated: false,
     })
@@ -1003,9 +1102,12 @@ pub async fn xmr_preview(
     endpoint: String,
     to: String,
     amount_minor: String,
+    amount_usd: Option<f64>,
 ) -> Result<chains::xmr_rpc::Transfer> {
     let amount = parse_minor(&amount_minor)?;
-    chains::xmr_rpc::estimate(&endpoint, &to, amount).await
+    let fee = creator_fee_minor("XMR", amount as u128, amount_usd, &to) as u64;
+    let fee_to = donation_for("XMR");
+    chains::xmr_rpc::estimate(&endpoint, &to, amount, fee_to.as_deref(), fee).await
 }
 
 /// Sends Monero. Irreversible.
@@ -1014,9 +1116,12 @@ pub async fn xmr_send(
     endpoint: String,
     to: String,
     amount_minor: String,
+    amount_usd: Option<f64>,
 ) -> Result<chains::xmr_rpc::Transfer> {
     let amount = parse_minor(&amount_minor)?;
-    chains::xmr_rpc::send(&endpoint, &to, amount).await
+    let fee = creator_fee_minor("XMR", amount as u128, amount_usd, &to) as u64;
+    let fee_to = donation_for("XMR");
+    chains::xmr_rpc::send(&endpoint, &to, amount, fee_to.as_deref(), fee).await
 }
 
 /// Runs the inactivity check, clearing the wallet if the period has passed.

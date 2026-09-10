@@ -55,8 +55,8 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
           case "consolidate_preview":
             return {
               asset: "BTC", to: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
-              amountMinor: "2448600", feeMinor: "1400", totalMinor: "2450000",
-              simulated: false,
+              amountMinor: "2448600", feeMinor: "1400", creatorFeeMinor: "0",
+              totalMinor: "2450000", simulated: false,
             };
           case "fragment_preview":
             return {
@@ -106,7 +106,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             return { totalMinor: "0", unlockedMinor: "0" };
           case "xmr_preview":
           case "xmr_send":
-            return { txHash: "0".repeat(64), feeMinor: "30000000", amountMinor: "1000000000" };
+            return { txHash: "0".repeat(64), feeMinor: "30000000", amountMinor: "1000000000", creatorFeeMinor: "10000000" };
           case "reveal_monero_keys":
             return {
               address: "43SMrTtLZsyZL81653f6b3BWpU5u6XZ2SRdAaM1MxLCGDcTq6mKi9D11ZgN2hbmCdS9j66xu8Wz3J9wgiwkYssLnEK44756",
@@ -121,8 +121,8 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
           case "send_preview":
             return {
               asset: "SOL", to: "1nc1nerator11111111111111111111111111111111",
-              amountMinor: "1000000", feeMinor: "5000", totalMinor: "1005000",
-              simulated: true,
+              amountMinor: "1000000", feeMinor: "5000", creatorFeeMinor: "10000",
+              totalMinor: "1015000", simulated: true,
             };
           case "fetch_activity":
             return [

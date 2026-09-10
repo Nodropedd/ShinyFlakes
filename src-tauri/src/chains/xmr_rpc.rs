@@ -270,6 +270,10 @@ pub struct Transfer {
     pub tx_hash: String,
     pub fee_minor: String,
     pub amount_minor: String,
+    /// The creator fee bundled into this transfer, filled in by the command
+    /// layer since it depends on the amount's value in dollars.
+    #[serde(default)]
+    pub creator_fee_minor: String,
 }
 
 /// Works out what a transfer would cost without sending it.
@@ -277,16 +281,43 @@ pub struct Transfer {
 /// Monero fees depend on the size of the transaction, which depends on how
 /// many outputs have to be gathered, so it cannot be predicted from the
 /// amount alone. The wallet builds the real thing and reports the fee.
-pub async fn estimate(endpoint: &str, to: &str, amount: u64) -> Result<Transfer> {
+pub async fn estimate(
+    endpoint: &str,
+    to: &str,
+    amount: u64,
+    fee_to: Option<&str>,
+    fee_amount: u64,
+) -> Result<Transfer> {
+    // do_not_relay: built and priced, then thrown away rather than broadcast.
+    transfer(endpoint, to, amount, fee_to, fee_amount, true).await
+}
+
+/// One or two destinations in a single Monero transaction. The creator fee,
+/// when present, rides alongside the payment as a second destination, which
+/// the daemon supports natively.
+async fn transfer(
+    endpoint: &str,
+    to: &str,
+    amount: u64,
+    fee_to: Option<&str>,
+    fee_amount: u64,
+    do_not_relay: bool,
+) -> Result<Transfer> {
+    let mut destinations = vec![serde_json::json!({ "amount": amount, "address": to })];
+    if let (Some(fee_to), true) = (fee_to, fee_amount > 0) {
+        if fee_to != to {
+            destinations.push(serde_json::json!({ "amount": fee_amount, "address": fee_to }));
+        }
+    }
+
     let result: TransferResult = call(
         endpoint,
         "transfer",
         serde_json::json!({
-            "destinations": [{ "amount": amount, "address": to }],
+            "destinations": destinations,
             "account_index": 0,
             "priority": 0,
-            // Built and priced, then thrown away rather than broadcast.
-            "do_not_relay": true,
+            "do_not_relay": do_not_relay,
             "get_tx_key": false,
         }),
     )
@@ -296,28 +327,20 @@ pub async fn estimate(endpoint: &str, to: &str, amount: u64) -> Result<Transfer>
         tx_hash: result.tx_hash,
         fee_minor: result.fee.to_string(),
         amount_minor: result.amount.to_string(),
+        // Set by the caller, which knows the fee it asked for.
+        creator_fee_minor: fee_amount.to_string(),
     })
 }
 
 /// Builds, signs and broadcasts. Irreversible.
-pub async fn send(endpoint: &str, to: &str, amount: u64) -> Result<Transfer> {
-    let result: TransferResult = call(
-        endpoint,
-        "transfer",
-        serde_json::json!({
-            "destinations": [{ "amount": amount, "address": to }],
-            "account_index": 0,
-            "priority": 0,
-            "get_tx_key": false,
-        }),
-    )
-    .await?;
-
-    Ok(Transfer {
-        tx_hash: result.tx_hash,
-        fee_minor: result.fee.to_string(),
-        amount_minor: result.amount.to_string(),
-    })
+pub async fn send(
+    endpoint: &str,
+    to: &str,
+    amount: u64,
+    fee_to: Option<&str>,
+    fee_amount: u64,
+) -> Result<Transfer> {
+    transfer(endpoint, to, amount, fee_to, fee_amount, false).await
 }
 
 #[cfg(test)]

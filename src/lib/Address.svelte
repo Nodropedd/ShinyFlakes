@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { copyAndVerify } from "./clipboard";
+
   // The derivation path used to appear in the tooltip. It means nothing to
   // anyone reading an address and only added noise, so only the address is
   // shown now.
   let { value }: { value: string; path?: string | null } = $props();
 
   let copied = $state(false);
+  let hijacked = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   // Without this, navigating away within the feedback window leaves a timer
@@ -18,22 +21,15 @@
   );
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch {
-      // Clipboard API can be unavailable depending on webview settings.
-      const el = document.createElement("textarea");
-      el.value = value;
-      el.setAttribute("readonly", "");
-      el.style.position = "fixed";
-      el.style.opacity = "0";
-      document.body.appendChild(el);
-      el.select();
-      try {
-        document.execCommand("copy");
-      } finally {
-        el.remove();
-      }
+    hijacked = false;
+    const outcome = await copyAndVerify(value);
+    if (outcome === "mismatch") {
+      // Something replaced the clipboard right after the copy. The classic
+      // sign of address-swapping malware. Warn loudly rather than flash OK.
+      hijacked = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => (hijacked = false), 8000);
+      return;
     }
     copied = true;
     clearTimeout(timer);
@@ -43,12 +39,17 @@
 
 <button
   class="addr mono"
+  class:danger={hijacked}
   onclick={copy}
-  title={value}
+  title={hijacked
+    ? "Warning: the clipboard changed right after copying. Do not paste this; malware may be swapping addresses."
+    : value}
   aria-label="Copy address {value}"
 >
   <span class="text">{short}</span>
-  {#if copied}
+  {#if hijacked}
+    <span class="warn">Clipboard changed. Do not paste.</span>
+  {:else if copied}
     <span class="flag">Copied</span>
   {:else}
     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
@@ -78,5 +79,15 @@
     color: var(--ok);
     font-size: 10.5px;
     font-weight: 600;
+  }
+
+  .addr.danger {
+    color: var(--danger);
+  }
+
+  .warn {
+    color: var(--danger);
+    font-size: 10.5px;
+    font-weight: 700;
   }
 </style>

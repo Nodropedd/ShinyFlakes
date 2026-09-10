@@ -459,6 +459,10 @@ pub struct Plan {
 ///
 /// The fee is recalculated as inputs are added, because each one makes the
 /// transaction bigger and therefore more expensive.
+/// Single-output convenience over select_outputs. The send path builds its
+/// own output list to carry the creator fee, so this is exercised only by the
+/// tests now, but it stays as the plain, readable entry point.
+#[allow(dead_code)]
 pub fn select(
     utxos: &[Utxo],
     dest_script: Vec<u8>,
@@ -471,6 +475,27 @@ pub fn select(
             "{amount} is below the dust limit of {DUST}, so the network would reject it."
         )));
     }
+    select_outputs(
+        utxos,
+        vec![Output { script: dest_script, value: amount }],
+        change_script,
+        fee_rate,
+    )
+}
+
+/// Chooses inputs to cover a fixed set of outputs plus the network fee.
+///
+/// The single-recipient send is one fixed output; a send that also carries the
+/// creator fee is two. Keeping one selector means the change and no-change
+/// logic, and the way the fee scales with output count, are identical in both.
+pub fn select_outputs(
+    utxos: &[Utxo],
+    fixed: Vec<Output>,
+    change_script: Vec<u8>,
+    fee_rate: f64,
+) -> Result<Plan> {
+    let out_value: u64 = fixed.iter().map(|o| o.value).sum();
+    let n = fixed.len();
 
     let fee_for = |inputs: usize, outputs: usize| {
         (estimated_vsize(inputs, outputs) as f64 * fee_rate).ceil() as u64
@@ -483,50 +508,33 @@ pub fn select(
         chosen.push(utxo.clone());
         total += utxo.value;
 
-        // Preferred shape: pay the destination and send the remainder back.
-        let fee = fee_for(chosen.len(), 2);
-        if total >= amount + fee {
-            let change = total - amount - fee;
+        // Preferred shape: the fixed outputs plus change back to us.
+        let fee = fee_for(chosen.len(), n + 1);
+        if total >= out_value + fee {
+            let change = total - out_value - fee;
             if change >= DUST {
-                return Ok(Plan {
-                    inputs: chosen,
-                    outputs: vec![
-                        Output {
-                            script: dest_script,
-                            value: amount,
-                        },
-                        Output {
-                            script: change_script,
-                            value: change,
-                        },
-                    ],
-                    fee,
-                    change,
-                });
+                let mut outputs = fixed;
+                outputs.push(Output { script: change_script, value: change });
+                return Ok(Plan { inputs: chosen, outputs, fee, change });
             }
         }
 
-        // No change output: either the remainder would be dust, or the amount
-        // is close enough to the whole balance that there is nothing to
-        // return. Dropping the output also makes the transaction cheaper,
-        // which is why this is checked even when the two-output fee was not
-        // covered.
-        let lean_fee = fee_for(chosen.len(), 1);
-        if total >= amount + lean_fee {
+        // No change: the remainder would be dust, or there is nothing to
+        // return. Dropping the output is also cheaper, so it is checked even
+        // when the with-change fee was not covered.
+        let lean = fee_for(chosen.len(), n);
+        if total >= out_value + lean {
             return Ok(Plan {
                 inputs: chosen,
-                outputs: vec![Output {
-                    script: dest_script,
-                    value: amount,
-                }],
-                fee: total - amount,
+                outputs: fixed,
+                fee: total - out_value,
                 change: 0,
             });
         }
     }
 
     let held: u64 = utxos.iter().map(|u| u.value).sum();
-    let needed = amount + fee_for(utxos.len().max(1), 2);
+    let needed = out_value + fee_for(utxos.len().max(1), n + 1);
     Err(WalletError::Funds(format!(
         "This needs about {needed} including fees, but only {held} is confirmed and spendable."
     )))
@@ -666,6 +674,9 @@ pub fn fragment(
 /// This is what coin control needs: when someone has picked which coins to
 /// spend, the wallet must spend those and only those, even if a cheaper
 /// selection existed.
+/// Single-output convenience over plan_with_outputs, kept for the tests and
+/// as the plain entry point; the send path uses the general form to add fees.
+#[allow(dead_code)]
 pub fn plan_with(
     inputs: &[Utxo],
     dest_script: Vec<u8>,
@@ -673,48 +684,60 @@ pub fn plan_with(
     change_script: Vec<u8>,
     fee_rate: f64,
 ) -> Result<Plan> {
-    if inputs.is_empty() {
-        return Err(WalletError::Funds("No coins were chosen to spend.".into()));
-    }
     if amount < DUST {
         return Err(WalletError::Funds(format!(
             "{amount} is below the dust limit of {DUST}, so the network would reject it."
         )));
     }
+    plan_with_outputs(
+        inputs,
+        vec![Output { script: dest_script, value: amount }],
+        change_script,
+        fee_rate,
+    )
+}
 
+/// Like plan_with, but for a fixed set of outputs. Spends exactly the coins
+/// given, never reaching for others, which is what coin control needs.
+pub fn plan_with_outputs(
+    inputs: &[Utxo],
+    fixed: Vec<Output>,
+    change_script: Vec<u8>,
+    fee_rate: f64,
+) -> Result<Plan> {
+    if inputs.is_empty() {
+        return Err(WalletError::Funds("No coins were chosen to spend.".into()));
+    }
+
+    let out_value: u64 = fixed.iter().map(|o| o.value).sum();
+    let n = fixed.len();
     let total: u64 = inputs.iter().map(|u| u.value).sum();
     let fee_for = |outputs: usize| {
         (estimated_vsize(inputs.len(), outputs) as f64 * fee_rate).ceil() as u64
     };
 
-    let with_change = fee_for(2);
-    if total >= amount + with_change {
-        let change = total - amount - with_change;
+    let with_change = fee_for(n + 1);
+    if total >= out_value + with_change {
+        let change = total - out_value - with_change;
         if change >= DUST {
-            return Ok(Plan {
-                inputs: inputs.to_vec(),
-                outputs: vec![
-                    Output { script: dest_script, value: amount },
-                    Output { script: change_script, value: change },
-                ],
-                fee: with_change,
-                change,
-            });
+            let mut outputs = fixed;
+            outputs.push(Output { script: change_script, value: change });
+            return Ok(Plan { inputs: inputs.to_vec(), outputs, fee: with_change, change });
         }
     }
 
-    let lean = fee_for(1);
-    if total >= amount + lean {
+    let lean = fee_for(n);
+    if total >= out_value + lean {
         return Ok(Plan {
             inputs: inputs.to_vec(),
-            outputs: vec![Output { script: dest_script, value: amount }],
-            fee: total - amount,
+            outputs: fixed,
+            fee: total - out_value,
             change: 0,
         });
     }
 
     Err(WalletError::Funds(format!(
-        "The chosen coins hold {total}, which does not cover {amount} plus a fee of about {lean}."
+        "The chosen coins hold {total}, which does not cover {out_value} plus a fee of about {lean}."
     )))
 }
 
@@ -951,6 +974,24 @@ mod tests {
 
     fn dest() -> Vec<u8> {
         script_pubkey_for("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", Chain::Bitcoin).unwrap()
+    }
+
+    #[test]
+    fn a_fee_output_is_carried_alongside_the_payment() {
+        let utxos = vec![utxo(1_000_000, 0)];
+        let fixed = vec![
+            Output { script: dest(), value: 400_000 },
+            Output { script: dest(), value: 4_000 },
+        ];
+        let plan = select_outputs(&utxos, fixed, dest(), 5.0).unwrap();
+
+        // Payment, fee, and change, and nothing created or destroyed.
+        assert_eq!(plan.outputs.len(), 3);
+        assert_eq!(plan.outputs[0].value, 400_000);
+        assert_eq!(plan.outputs[1].value, 4_000);
+        let spent: u64 = plan.inputs.iter().map(|i| i.value).sum();
+        let paid: u64 = plan.outputs.iter().map(|o| o.value).sum();
+        assert_eq!(spent, paid + plan.fee);
     }
 
     #[test]
