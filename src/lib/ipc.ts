@@ -184,6 +184,36 @@ export interface Donation {
   host: AssetId | null;
 }
 
+export interface Inactivity {
+  /** Unix seconds, absent on a machine that has never been used. */
+  lastSeen: number | null;
+  /** Months of silence before the switch fires. Zero is never. */
+  months: number;
+  /** "delete" clears the local wallet; "donate" sweeps first. */
+  action: "delete" | "donate";
+  daysSince: number;
+  /** Days left before the switch fires. Null when set to never. */
+  daysRemaining: number | null;
+  /** Donate mode: the deadline passed and grace is counting down. Unlocking
+   *  now cancels it. */
+  graceActive: boolean;
+  graceDaysRemaining: number | null;
+  /** Donate mode: grace has also passed, a sweep is owed. */
+  sweepDue: boolean;
+  /** Delete mode: the wallet was cleared by this check, just now. */
+  wiped: boolean;
+}
+
+export interface SweepResult {
+  asset: AssetId;
+  /** The transaction id, when something was sent. */
+  txid: string | null;
+  /** Why nothing was sent, when that is expected. */
+  skipped: string | null;
+  /** A real failure. */
+  error: string | null;
+}
+
 /** Mirrors the `WalletError` enum on the Rust side. */
 export interface IpcError {
   kind: string;
@@ -269,6 +299,22 @@ export const ipc = {
 
   /** What the account can afford, so the UI can offer a working maximum. */
   sendLimits: (asset: AssetId) => call<SendLimits>("send_limits", { asset }),
+
+  /** Runs the inactivity check, clearing the wallet if the period passed.
+   *  Needs no keys, so it runs before unlocking. */
+  inactivityCheck: () => call<Inactivity>("inactivity_check"),
+
+  /** Changes how long the wallet may sit unopened. */
+  inactivitySetMonths: (months: number) =>
+    call<Inactivity>("inactivity_set_months", { months }),
+
+  /** Chooses whether the switch deletes the wallet or sweeps to donations. */
+  inactivitySetAction: (action: "delete" | "donate") =>
+    call<Inactivity>("inactivity_set_action", { action }),
+
+  /** Runs a due sweep to the donation addresses, then clears the wallet.
+   *  Re-checked in the core, so it only acts when genuinely owed. */
+  inactivitySweep: () => call<SweepResult[]>("inactivity_sweep"),
 
   /** Where a tip goes, per asset. Fixed and compiled into the program. */
   donationAddresses: () => call<Donation[]>("donation_addresses"),

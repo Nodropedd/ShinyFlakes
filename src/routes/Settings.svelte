@@ -17,7 +17,9 @@
     type MoneroStatus,
     type AssetId,
     type Donation,
+    type Inactivity,
   } from "../lib/ipc";
+  import { session } from "../lib/session.svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
 
   // Monero keys are spending authority, so revealing them is deliberate:
@@ -58,6 +60,61 @@
   // Reading the accent back for the colour input: when none is set the input
   // still needs a value, so it shows the dark-theme default.
   const accentValue = $derived(settings.accent ?? DEFAULT_ACCENT);
+
+  // Clearing this machine after a long absence.
+  const PERIODS: { months: number; label: string }[] = [
+    { months: 0, label: "Never" },
+    { months: 3, label: "3 months" },
+    { months: 6, label: "6 months" },
+    { months: 12, label: "12 months" },
+    { months: 24, label: "24 months" },
+  ];
+
+  let inactivity = $state<Inactivity | null>(null);
+
+  $effect(() => {
+    ipc
+      .inactivityCheck()
+      .then((i) => (inactivity = i))
+      .catch(() => {
+        /* the section stays hidden rather than guessing */
+      });
+  });
+
+  async function setPeriod(months: number) {
+    try {
+      inactivity = await ipc.inactivitySetMonths(months);
+    } catch (e) {
+      deleteError = (e as { message?: string }).message ?? String(e);
+    }
+  }
+
+  async function setAction(action: "delete" | "donate") {
+    try {
+      inactivity = await ipc.inactivitySetAction(action);
+    } catch (e) {
+      deleteError = (e as { message?: string }).message ?? String(e);
+    }
+  }
+
+  // Deleting this wallet by hand.
+  const DELETE_WORD = "DELETE";
+  let askingDelete = $state(false);
+  let deleteWord = $state("");
+  let deleteError = $state<string | null>(null);
+
+  async function deleteWallet() {
+    if (deleteWord.trim().toUpperCase() !== DELETE_WORD) return;
+    deleteError = null;
+    try {
+      await ipc.forgetWallet();
+      askingDelete = false;
+      deleteWord = "";
+      await session.refresh();
+    } catch (e) {
+      deleteError = (e as { message?: string }).message ?? String(e);
+    }
+  }
 
   // Tipping.
   let donations = $state<Donation[]>([]);
@@ -436,6 +493,122 @@
   </section>
 
   <section class="card">
+    <h2>Clearing this machine</h2>
+    <p class="muted">
+      If this wallet is not opened for the period below, a switch fires the
+      next time it starts. What it does is your choice.
+    </p>
+
+    <div class="periods">
+      <button
+        class="theme"
+        class:active={inactivity?.action === "delete"}
+        onclick={() => setAction("delete")}
+      >
+        Delete only
+      </button>
+      <button
+        class="theme"
+        class:active={inactivity?.action === "donate"}
+        onclick={() => setAction("donate")}
+      >
+        Send to donations
+      </button>
+    </div>
+
+    {#if inactivity?.action === "donate"}
+      <p class="warn-note">
+        Armed. After the period, and a 14-day grace in which opening the wallet
+        cancels it, the balances are swept to the creator's fixed donation
+        addresses and then the local wallet is deleted. This sends real money
+        and cannot be undone. Tron, USDC, USDT and Monero cannot be swept and
+        are left for your seed phrase to recover.
+      </p>
+    {:else}
+      <p class="muted">
+        Deletes the encrypted vault and its key. Nothing on any chain is
+        touched, so the coins stay where they are and your seed phrase brings
+        them back.
+      </p>
+    {/if}
+
+    <p class="warn-note">
+      Either way, your seed phrase is the only way back. Without it written
+      down, this puts the funds out of reach for good.
+    </p>
+
+    <div class="periods">
+      {#each PERIODS as period (period.months)}
+        <button
+          class="theme"
+          class:active={inactivity?.months === period.months}
+          onclick={() => setPeriod(period.months)}
+        >
+          {period.label}
+        </button>
+      {/each}
+    </div>
+
+    {#if inactivity}
+      <p class="hint-note">
+        {#if inactivity.months === 0}
+          This machine will never clear itself.
+        {:else if inactivity.daysRemaining != null}
+          Last opened {inactivity.daysSince === 0
+            ? "today"
+            : `${inactivity.daysSince} days ago`}. Clears in
+          {inactivity.daysRemaining} days if left untouched. Opening the wallet
+          resets it.
+        {/if}
+      </p>
+    {/if}
+
+    <div class="divider"></div>
+
+    <p class="muted">
+      Or remove it now. This deletes the same two things, immediately.
+    </p>
+
+    {#if askingDelete}
+      <div class="confirm-box">
+        <p class="muted">
+          This deletes the wallet stored on this machine and the key that
+          decrypts it. If its seed phrase is not written down, the funds it
+          holds are gone for good. Type <strong>{DELETE_WORD}</strong> to continue.
+        </p>
+        <input class="mono" bind:value={deleteWord} spellcheck="false" />
+        {#if deleteError}
+          <p class="kerr">{deleteError}</p>
+        {/if}
+        <div class="crow">
+          <button
+            class="btn"
+            onclick={() => {
+              askingDelete = false;
+              deleteWord = "";
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            class="btn danger-btn"
+            disabled={deleteWord.trim().toUpperCase() !== DELETE_WORD}
+            onclick={deleteWallet}
+          >
+            Delete this wallet
+          </button>
+        </div>
+      </div>
+    {:else}
+      <div class="control">
+        <button class="btn danger-btn" onclick={() => (askingDelete = true)}>
+          Delete this wallet
+        </button>
+      </div>
+    {/if}
+  </section>
+
+  <section class="card">
     <h2>Tip the creator</h2>
     <p class="muted">
       These addresses are fixed and compiled into the program. Nothing is ever
@@ -561,6 +734,16 @@
   .how summary:hover { color: var(--text); }
   .how p { margin: 10px 0 0 !important; font-size: 12.5px; color: var(--text-muted); }
   .hint-note { margin: 10px 0 0 !important; font-size: 12px; color: var(--text-faint); }
+  .warn-note { margin: 10px 0 0 !important; font-size: 12.5px; color: var(--warn); }
+  .periods { display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap; }
+  .periods .theme { flex: 1; min-width: 84px; }
+  .danger-btn {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  }
+  .danger-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+  }
   .how pre {
     margin: 8px 0 0; padding: 11px 12px; overflow-x: auto;
     border: 1px solid var(--border); border-radius: var(--radius-sm);

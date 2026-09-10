@@ -122,6 +122,31 @@
       <Wordmark size={38} />
     </header>
 
+    {#if session.sweptByInactivity}
+      <div class="cleared">
+        <p>
+          This machine swept its balances to the donation addresses and cleared
+          itself. The wallet was not opened for the period set in Settings, nor
+          during the grace window after it.
+        </p>
+        <p class="armed-sub">
+          Any coins that could not be swept are still on their chains. Restore
+          below with your seed phrase to reach them.
+        </p>
+      </div>
+    {:else if session.clearedByInactivity}
+      <div class="cleared">
+        <p>
+          This machine cleared itself. The wallet was not opened for the period
+          set in Settings, so the vault and its key were deleted here.
+        </p>
+        <p class="armed-sub">
+          Nothing on any chain was touched. Restore below with your seed phrase
+          to reach the same coins.
+        </p>
+      </div>
+    {/if}
+
     {#if newMnemonic}
       <p class="lede">
         Write these 24 words down and store them offline. They are the only way
@@ -132,6 +157,16 @@
           <li><span class="idx">{i + 1}</span>{word}</li>
         {/each}
       </ol>
+      <div class="armed">
+        <p>
+          This machine clears itself if the wallet is not opened for 12 months.
+          The vault and its key are deleted; the coins stay on their chains,
+          untouched. Your phrase is the only way back to them, which is why it
+          has to leave this screen on paper.
+        </p>
+        <p class="armed-sub">Change the period or turn it off in Settings.</p>
+      </div>
+
       <label class="confirm">
         <input type="checkbox" bind:checked={backedUp} />
         <span>I have written the phrase down.</span>
@@ -328,6 +363,38 @@
     color: var(--text-faint);
     font-size: 11px;
     min-width: 16px;
+  }
+
+  .armed {
+    margin: 0 0 16px;
+    padding: 12px 14px;
+    border: 1px solid color-mix(in srgb, var(--warn) 32%, var(--border));
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warn) 7%, transparent);
+  }
+
+  .armed p {
+    margin: 0;
+    font-size: 12.5px;
+  }
+
+  .armed-sub {
+    margin-top: 7px !important;
+    color: var(--text-muted);
+    font-size: 12px !important;
+  }
+
+  .cleared {
+    margin: 0 0 18px;
+    padding: 13px 15px;
+    border: 1px solid color-mix(in srgb, var(--warn) 32%, var(--border));
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--warn) 7%, transparent);
+  }
+
+  .cleared p {
+    margin: 0;
+    font-size: 12.5px;
   }
 
   .danger {

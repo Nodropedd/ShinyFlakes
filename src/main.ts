@@ -69,6 +69,12 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             ];
           case "next_receive_address":
             return { asset: "BTC", address: "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", index: 4, rotates: true };
+          case "inactivity_check":
+          case "inactivity_set_months":
+          case "inactivity_set_action":
+            return { lastSeen: Math.floor(Date.now() / 1000) - 86400 * 40, months: 12, action: "delete", daysSince: 40, daysRemaining: 325, graceActive: false, graceDaysRemaining: null, sweepDue: false, wiped: false };
+          case "inactivity_sweep":
+            return [{ asset: "BTC", txid: "0".repeat(64), skipped: null, error: null }];
           case "donation_addresses":
             return [
               { asset: "BTC", address: "bc1qpy3p4gxa4d3x3w0lryma77qqdrfgwhfqwhw7tn", host: null },

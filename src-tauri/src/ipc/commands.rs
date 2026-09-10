@@ -60,6 +60,10 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
         buckets: payload.buckets.clone(),
     });
 
+    // Using the wallet is what pushes the inactivity deadline back. A failed
+    // attempt deliberately does not count.
+    let _ = crate::inactivity::record_seen(&state.data_dir);
+
     Ok(())
 }
 
@@ -99,6 +103,10 @@ pub fn unlock(mnemonic: String, state: State<AppState>) -> Result<()> {
         mnemonic: Zeroizing::new(parsed.to_string()),
         buckets: payload.buckets.clone(),
     });
+
+    // Using the wallet is what pushes the inactivity deadline back. A failed
+    // attempt deliberately does not count.
+    let _ = crate::inactivity::record_seen(&state.data_dir);
 
     Ok(())
 }
@@ -995,6 +1003,252 @@ pub async fn xmr_send(
 ) -> Result<chains::xmr_rpc::Transfer> {
     let amount = parse_minor(&amount_minor)?;
     chains::xmr_rpc::send(&endpoint, &to, amount).await
+}
+
+/// Runs the inactivity check, clearing the wallet if the period has passed.
+///
+/// Called at startup, before unlocking. It needs no keys, so it still works
+/// for someone who has lost the phrase and cannot get in.
+#[tauri::command]
+pub fn inactivity_check(state: State<AppState>) -> crate::inactivity::Status {
+    match crate::inactivity::check(&state.data_dir, &state.vault_path) {
+        crate::inactivity::Outcome::Idle(s)
+        | crate::inactivity::Outcome::Wiped(s)
+        | crate::inactivity::Outcome::SweepDue(s) => s,
+    }
+}
+
+/// Changes how long the wallet may sit unopened before the switch fires.
+#[tauri::command]
+pub fn inactivity_set_months(
+    months: u32,
+    state: State<AppState>,
+) -> Result<crate::inactivity::Status> {
+    crate::inactivity::set_months(&state.data_dir, months)
+}
+
+/// Chooses what the switch does: delete the local wallet, or sweep the
+/// balances to the donation addresses first.
+#[tauri::command]
+pub fn inactivity_set_action(
+    action: String,
+    state: State<AppState>,
+) -> Result<crate::inactivity::Status> {
+    let action = match action.as_str() {
+        "donate" => crate::inactivity::Action::Donate,
+        "delete" => crate::inactivity::Action::Delete,
+        other => {
+            return Err(WalletError::Unsupported(format!("unknown action {other}")))
+        }
+    };
+    crate::inactivity::set_action(&state.data_dir, action)
+}
+
+/// One chain's outcome during an inactivity sweep.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SweepResult {
+    pub asset: String,
+    /// The transaction id, when something was sent.
+    pub txid: Option<String>,
+    /// Why nothing was sent, when that is expected (no balance, or a chain
+    /// this wallet cannot yet sign for).
+    pub skipped: Option<String>,
+    /// A real failure, usually the network. Blocks the local wipe so the
+    /// next launch tries again.
+    pub error: Option<String>,
+}
+
+impl SweepResult {
+    fn sent(asset: &str, txid: String) -> Self {
+        Self { asset: asset.into(), txid: Some(txid), skipped: None, error: None }
+    }
+    fn skip(asset: &str, why: &str) -> Self {
+        Self { asset: asset.into(), txid: None, skipped: Some(why.into()), error: None }
+    }
+    fn failed(asset: &str, e: impl std::fmt::Display) -> Self {
+        Self { asset: asset.into(), txid: None, skipped: None, error: Some(e.to_string()) }
+    }
+}
+
+/// Reads the seed straight from the vault, without an unlock.
+///
+/// This is the path the inactivity sweep needs, since by definition nobody is
+/// there to type the phrase. It works because the vault key lives in the OS
+/// credential store, so the app can decrypt at rest whenever the OS account
+/// is available. It is used for nothing else.
+fn recover_seed(state: &State<AppState>) -> Result<[u8; 64]> {
+    let key = keychain::load()?;
+    let payload = store::read(&state.vault_path, &key)?;
+    let parsed = seed::parse(&payload.mnemonic)?;
+    Ok(*seed::to_seed(&parsed))
+}
+
+fn donation_for(asset: &str) -> Option<String> {
+    crate::donation::addresses()
+        .into_iter()
+        .find(|d| d.asset == asset)
+        .map(|d| d.address)
+}
+
+/// Sends every spendable balance to the donation addresses.
+///
+/// Reuses the same signing this wallet uses for an ordinary send, so nothing
+/// about moving the money is new here; only the orchestration is. Chains that
+/// cannot yet sign (Tron), that need a running daemon nobody has started
+/// (Monero), or whose tokens this wallet does not send (USDC, USDT) are
+/// skipped and left for the seed phrase to recover.
+async fn sweep_all(seed: &[u8; 64]) -> Vec<SweepResult> {
+    let mut out = Vec::new();
+
+    // Bitcoin and Litecoin: consolidate every output to the donation script.
+    for (asset, chain) in [
+        ("BTC", chains::btc_tx::Chain::Bitcoin),
+        ("LTC", chains::btc_tx::Chain::Litecoin),
+    ] {
+        let Some(to) = donation_for(asset) else { continue };
+        out.push(match btc_context(seed, chain).await {
+            Ok((keyring, utxos, rate)) => {
+                if utxos.is_empty() {
+                    SweepResult::skip(asset, "no confirmed balance")
+                } else {
+                    match chains::btc_tx::script_pubkey_for(&to, chain)
+                        .and_then(|dest| chains::btc_tx::consolidate(&utxos, dest, rate))
+                        .and_then(|plan| {
+                            chains::btc_tx::build_signed(&keyring, &plan.inputs, &plan.outputs, 0)
+                        }) {
+                        Ok(signed) => {
+                            match chains::rpc::esplora_broadcast(
+                                chains::rpc::btc_apis(chain),
+                                &signed,
+                            )
+                            .await
+                            {
+                                Ok(id) => SweepResult::sent(asset, id),
+                                Err(e) => SweepResult::failed(asset, e),
+                            }
+                        }
+                        Err(e) => SweepResult::failed(asset, e),
+                    }
+                }
+            }
+            Err(e) => SweepResult::failed(asset, e),
+        });
+    }
+
+    // Ethereum: send balance minus the gas a plain transfer costs.
+    if let Some(to) = donation_for("ETH") {
+        out.push(match eth_context(seed).await {
+            Ok((keys, address, balance, max_fee, tip)) => {
+                let cost = max_fee * chains::eth::TRANSFER_GAS as u128;
+                if balance <= cost {
+                    SweepResult::skip("ETH", "balance does not cover gas")
+                } else {
+                    match chains::eth::parse_address(&to) {
+                        Ok(to) => match chains::rpc::eth_nonce(&address).await {
+                            Ok(nonce) => {
+                                let tx = chains::eth::Transfer {
+                                    nonce,
+                                    max_priority_fee: tip,
+                                    max_fee,
+                                    gas_limit: chains::eth::TRANSFER_GAS,
+                                    to,
+                                    value: balance - cost,
+                                    data: Vec::new(),
+                                };
+                                match chains::eth::sign(&keys, &tx) {
+                                    Ok(signed) => {
+                                        match chains::rpc::eth_broadcast(&signed).await {
+                                            Ok(id) => SweepResult::sent("ETH", id),
+                                            Err(e) => SweepResult::failed("ETH", e),
+                                        }
+                                    }
+                                    Err(e) => SweepResult::failed("ETH", e),
+                                }
+                            }
+                            Err(e) => SweepResult::failed("ETH", e),
+                        },
+                        Err(e) => SweepResult::failed("ETH", e),
+                    }
+                }
+            }
+            Err(e) => SweepResult::failed("ETH", e),
+        });
+    }
+
+    // Solana: empty the account to the donation address.
+    if let Some(to) = donation_for("SOL") {
+        let from = bs58::encode(
+            chains::sol_tx::signing_key(seed).verifying_key().to_bytes(),
+        )
+        .into_string();
+        out.push(match chains::rpc::sol_balance_of(&from).await {
+            Ok(balance) => {
+                let balance = balance.max(0) as u64;
+                let fee = chains::sol_tx::LAMPORTS_PER_SIGNATURE;
+                if balance <= fee {
+                    SweepResult::skip("SOL", "balance does not cover the fee")
+                } else {
+                    match chains::rpc::sol_latest_blockhash().await {
+                        Ok(blockhash) => {
+                            match chains::sol_tx::signed_transfer(
+                                seed,
+                                &to,
+                                balance - fee,
+                                &blockhash,
+                            ) {
+                                Ok(tx) => match chains::rpc::sol_broadcast(&tx).await {
+                                    Ok(id) => SweepResult::sent("SOL", id),
+                                    Err(e) => SweepResult::failed("SOL", e),
+                                },
+                                Err(e) => SweepResult::failed("SOL", e),
+                            }
+                        }
+                        Err(e) => SweepResult::failed("SOL", e),
+                    }
+                }
+            }
+            Err(e) => SweepResult::failed("SOL", e),
+        });
+    }
+
+    // Chains this wallet cannot sweep, named so the outcome is not silent.
+    out.push(SweepResult::skip("TRON", "sending Tron is not implemented"));
+    out.push(SweepResult::skip("USDT", "sending Tether is not implemented"));
+    out.push(SweepResult::skip("USDC", "sending USD Coin is not implemented"));
+    out.push(SweepResult::skip(
+        "XMR",
+        "needs the Monero daemon, which only runs while signed in",
+    ));
+
+    out
+}
+
+/// Runs a sweep that the inactivity switch has decided is due, then completes
+/// the switch by deleting the local wallet if every attempted chain sent.
+///
+/// The condition is re-checked here in Rust. The front end asking is not
+/// enough to move funds; the deadline and grace must genuinely have passed.
+#[tauri::command]
+pub async fn inactivity_sweep(state: State<'_, AppState>) -> Result<Vec<SweepResult>> {
+    match crate::inactivity::check(&state.data_dir, &state.vault_path) {
+        crate::inactivity::Outcome::SweepDue(_) => {}
+        _ => {
+            return Err(WalletError::Unsupported(
+                "no inactivity sweep is due".into(),
+            ))
+        }
+    }
+
+    let seed = recover_seed(&state)?;
+    let results = sweep_all(&seed).await;
+
+    // A skip is expected and fine; only a real failure holds back the wipe so
+    // the next launch can retry the chains that did not go through.
+    let all_ok = results.iter().all(|r| r.error.is_none());
+    crate::inactivity::finish_sweep(&state.data_dir, &state.vault_path, all_ok);
+
+    Ok(results)
 }
 
 /// Where a tip goes, per asset. Fixed and compiled in.
