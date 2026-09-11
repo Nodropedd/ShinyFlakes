@@ -27,6 +27,9 @@ export interface VaultStatus {
   unlocked: boolean;
   /** Unlocking needs a passphrase on top of the seed phrase. */
   needsPassphrase: boolean;
+  /** A vault file exists but its decryption key is gone from the OS
+   *  credential store, so it can never be opened here. Restore from seed. */
+  keyMissing: boolean;
 }
 
 export interface Bucket {

@@ -48,6 +48,26 @@
     }
   }
 
+  // When the key is gone the vault file is already undecryptable forever, so
+  // deleting it loses nothing recoverable. That is why this skips the FORGET
+  // prompt the ordinary path uses: there is nothing left here to protect, and
+  // the seed rebuilds the wallet in full.
+  async function restoreLostKey() {
+    if (busy) return;
+    busy = true;
+    error = null;
+    try {
+      await ipc.forgetWallet();
+      attempts = 0;
+      mode = "import";
+      await session.refresh();
+    } catch (e) {
+      error = (e as { message?: string }).message ?? String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   const wordCount = $derived(
     phrase.trim().split(/\s+/).filter(Boolean).length,
   );
@@ -71,18 +91,21 @@
       scrub();
       await session.refresh();
     } catch (e) {
-      error = (e as { message?: string }).message ?? String(e);
+      const err = e as { message?: string; kind?: string };
+      error = err.message ?? String(e);
       scrub();
-      if (mode === "unlock") {
+      // Only a genuine mismatch — a wrong seed or a wrong passphrase — counts
+      // against the limit. A missing key, a keychain fault, or a network blip
+      // is not a guess, and must not march the wallet toward a re-lock.
+      if (mode === "unlock" && (err.kind === "WrongSeed" || err.kind === "Decrypt")) {
         attempts += 1;
         if (attempts >= MAX_ATTEMPTS) {
-          // The wipe returns to seed entry with this component still mounted,
-          // so the counter has to be cleared here. Leaving it at the maximum
-          // made every later mistake trigger another wipe while the screen
-          // claimed no attempts remained.
+          // logout() drops the in-memory keys and returns here with the
+          // component still mounted, so the counter is cleared by hand.
+          // Nothing on disk is deleted; the wallet simply re-locks.
           await session.logout();
           attempts = 0;
-          error = "Keys wiped after three failed attempts. Enter your seed phrase again.";
+          error = "Too many attempts. The wallet re-locked — enter your seed phrase to try again.";
         }
       }
     } finally {
@@ -180,6 +203,29 @@
       >
         Continue
       </button>
+    {:else if session.status.keyMissing}
+      <div class="danger">
+        <p>
+          This machine still has your wallet file, but the key that decrypts
+          it is gone from the Windows credential store — so it cannot be opened
+          here anymore. No coins are affected: they live on their chains, and
+          your seed phrase reaches them in full.
+        </p>
+        <p class="muted">
+          Restoring rebuilds the wallet from your seed and replaces the unusable
+          file. It is the only way forward.
+        </p>
+      </div>
+      {#if error}
+        <p class="error">{error}</p>
+      {/if}
+      <button
+        class="btn btn-primary wide"
+        disabled={busy}
+        onclick={restoreLostKey}
+      >
+        Restore from seed phrase
+      </button>
     {:else}
       <p class="lede">
         {mode === "unlock"
@@ -204,8 +250,8 @@
         {#if mode === "unlock" && attempts > 0}
           <span class="warn">
             {remaining}
-            {remaining === 1 ? "attempt" : "attempts"} left before the wallet locks
-            out and clears.
+            {remaining === 1 ? "attempt" : "attempts"} left before the wallet
+            re-locks. Nothing is deleted.
           </span>
         {/if}
       </div>

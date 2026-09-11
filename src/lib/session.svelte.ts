@@ -11,6 +11,7 @@ class Session {
     initialized: false,
     unlocked: false,
     needsPassphrase: false,
+    keyMissing: false,
   });
 
   /** Set when the inactivity switch cleared the wallet, so the cold start can

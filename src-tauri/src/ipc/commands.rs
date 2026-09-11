@@ -19,11 +19,20 @@ pub struct VaultStatus {
     /// The vault is sealed with a passphrase, so unlocking needs one on top
     /// of the seed phrase.
     pub needs_passphrase: bool,
+    /// A vault file exists but its keychain key is gone, so nothing on this
+    /// machine can decrypt it. The only way forward is to restore from the
+    /// seed. Reported up front so the UI never shows a dead unlock form.
+    pub key_missing: bool,
 }
 
 #[tauri::command]
 pub fn vault_status(state: State<AppState>) -> VaultStatus {
     let initialized = store::exists(&state.vault_path);
+    // A missing entry (NoVault) with a vault file present means the key is
+    // gone. A transient keychain fault is not treated as "gone": the user
+    // would hit it on unlock instead, rather than being pushed to restore.
+    let key_missing =
+        initialized && matches!(keychain::load(), Err(WalletError::NoVault));
     VaultStatus {
         initialized,
         unlocked: state.is_unlocked(),
@@ -31,6 +40,7 @@ pub fn vault_status(state: State<AppState>) -> VaultStatus {
             && store::lock_info(&state.vault_path)
                 .map(|i| i.needs_passphrase)
                 .unwrap_or(false),
+        key_missing,
     }
 }
 
