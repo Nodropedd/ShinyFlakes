@@ -1588,16 +1588,20 @@ pub async fn monero_stop(
 }
 
 // ------------------------------------------------------------------------
-// Email and two-factor
+// Email notifications and two-factor
 //
-// The mailbox belongs to the user, and codes and notices go only to it. The
-// app password is held in the keychain-sealed config file, never shown back to
-// the front end. Two-factor gates the sensitive reveals, and any reveal, gated
-// or not, sends the mailbox a notice so a theft of the device is not silent.
+// Two-factor is TOTP now: a secret shared with an authenticator app on the
+// user's phone, checked entirely offline. No email or server is involved in a
+// code, which is what makes it work out of the box.
+//
+// Email is kept only as an optional out-of-band notice: when a mailbox is
+// configured, any reveal of the seed or the keys sends it a note, so a theft of
+// the machine is not silent. The app password is held in the keychain-sealed
+// config file, never shown back to the front end.
 // ------------------------------------------------------------------------
 
 /// The mail configuration as the UI may see it: everything but the password,
-/// plus whether one is stored and whether two-factor is armed.
+/// plus whether one is stored.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailConfigView {
@@ -1609,7 +1613,6 @@ pub struct EmailConfigView {
     pub username: String,
     pub from: String,
     pub has_password: bool,
-    pub two_factor: bool,
 }
 
 fn email_config_view(data_dir: &std::path::Path) -> Result<EmailConfigView> {
@@ -1628,7 +1631,6 @@ fn email_config_view(data_dir: &std::path::Path) -> Result<EmailConfigView> {
         username: smtp.username,
         from: smtp.from,
         has_password,
-        two_factor: cfg.two_factor,
     })
 }
 
@@ -1705,173 +1707,174 @@ pub async fn send_test_email(state: State<'_, AppState>) -> Result<()> {
     .await
 }
 
-/// Turns two-factor on or off. Arming it needs a working mailbox, since the
-/// codes have nowhere else to go. Turning it off drops any code in flight.
-#[tauri::command]
-pub fn set_two_factor(on: bool, state: State<AppState>) -> Result<EmailConfigView> {
-    if !state.is_unlocked() {
-        return Err(WalletError::Locked);
-    }
-
-    let mut cfg = crate::appconfig::load(&state.data_dir)?;
-    if on && !cfg.smtp.as_ref().map(smtp_sendable).unwrap_or(false) {
-        return Err(WalletError::Unsupported(
-            "Set up and test your mail server before turning on two-factor.".into(),
-        ));
-    }
-
-    cfg.two_factor = on;
-    crate::appconfig::save(&state.data_dir, &cfg)?;
-
-    if !on {
-        if let Ok(mut tf) = state.two_factor.lock() {
-            *tf = crate::session::TwoFactor::default();
-        }
-    }
-
-    email_config_view(&state.data_dir)
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TwoFactorState {
     pub enabled: bool,
     /// A recent code check still authorises a reveal.
     pub pass_valid: bool,
-    /// A code has been sent and is waiting to be entered.
-    pub pending: bool,
 }
 
 #[tauri::command]
 pub fn two_factor_state(state: State<AppState>) -> Result<TwoFactorState> {
     let enabled = crate::appconfig::load(&state.data_dir)?.two_factor;
-    let (pass_valid, pending) = state
+    let pass_valid = state
         .two_factor
         .lock()
-        .map(|tf| {
-            (
-                tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false),
-                tf.pending.is_some(),
-            )
-        })
-        .unwrap_or((false, false));
-    Ok(TwoFactorState { enabled, pass_valid, pending })
-}
-
-/// Keeps the first letter and the domain, so the prompt can say where the code
-/// went without printing the whole address.
-fn mask_email(addr: &str) -> String {
-    match addr.split_once('@') {
-        Some((user, domain)) => {
-            let first = user.chars().next().unwrap_or('*');
-            format!("{first}***@{domain}")
-        }
-        None => "your inbox".into(),
-    }
+        .map(|tf| tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false))
+        .unwrap_or(false);
+    Ok(TwoFactorState { enabled, pass_valid })
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CodeSent {
-    /// The masked mailbox the code went to.
-    pub sent_to: String,
+pub struct TotpSetup {
+    /// The base32 secret, for manual entry into an authenticator.
+    pub secret: String,
+    /// The otpauth URI to render as a QR code.
+    pub uri: String,
 }
 
-/// Generates a code, emails it, and holds it in memory to check against.
-///
-/// The code is stored only after the mail is accepted, so a send failure never
-/// leaves a code waiting that the user never received.
+/// Begins turning two-factor on: mints a TOTP secret and hands back the QR to
+/// scan. Nothing is saved until a code confirms the authenticator holds it, so
+/// an abandoned setup leaves two-factor off.
 #[tauri::command]
-pub async fn request_2fa(state: State<'_, AppState>) -> Result<CodeSent> {
+pub fn begin_totp_setup(state: State<AppState>) -> Result<TotpSetup> {
     if !state.is_unlocked() {
         return Err(WalletError::Locked);
     }
-    let cfg = crate::appconfig::load(&state.data_dir)?;
-    if !cfg.two_factor {
-        return Err(WalletError::Unsupported("Two-factor is not turned on.".into()));
+    let secret = crate::totp::new_secret();
+    let uri = crate::totp::provisioning_uri(&secret, "wallet");
+
+    let mut tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+    tf.pending_secret = Some(secret.clone());
+
+    Ok(TotpSetup { secret, uri })
+}
+
+/// Confirms setup: the code must match the pending secret, which proves the
+/// authenticator imported it. Only then is two-factor saved as on.
+#[tauri::command]
+pub fn confirm_totp(code: String, state: State<AppState>) -> Result<bool> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
     }
-    let smtp = cfg.smtp.filter(smtp_sendable).ok_or_else(|| {
-        WalletError::Unsupported("No mailbox is configured to send the code to.".into())
+    let pending = {
+        let tf = state
+            .two_factor
+            .lock()
+            .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+        tf.pending_secret.clone()
+    };
+    let secret = pending.ok_or_else(|| {
+        WalletError::Unsupported("Start two-factor setup before confirming a code.".into())
     })?;
 
-    let code = crate::twofa::new_code();
-    crate::email::send(
-        &smtp,
-        "ShinyFlakes: your confirmation code",
-        &format!(
-            "Your confirmation code is {code}.\n\nIt is good for five minutes. If \
-             you did not just ask to reveal something sensitive in your wallet, \
-             someone may be at your machine."
-        ),
-    )
-    .await?;
-
-    if let Ok(mut tf) = state.two_factor.lock() {
-        tf.pending = Some(crate::twofa::begin(code));
-        tf.pass_expiry = None;
+    if !crate::totp::verify(&secret, &code)? {
+        return Ok(false);
     }
 
-    Ok(CodeSent { sent_to: mask_email(&smtp.from) })
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    cfg.two_factor = true;
+    cfg.totp_secret = secret;
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+
+    if let Ok(mut tf) = state.two_factor.lock() {
+        tf.pending_secret = None;
+        // A fresh, valid code doubles as a pass, so the setup can flow straight
+        // into whatever prompted it.
+        tf.pass_expiry = Some(crate::twofa::pass_expires_at());
+        tf.wrong = 0;
+        tf.locked_until = None;
+    }
+    Ok(true)
+}
+
+/// Turns two-factor off and forgets the secret.
+#[tauri::command]
+pub fn disable_two_factor(state: State<AppState>) -> Result<()> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    cfg.two_factor = false;
+    cfg.totp_secret = String::new();
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+
+    if let Ok(mut tf) = state.two_factor.lock() {
+        *tf = crate::session::TwoFactor::default();
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyResult {
-    /// ok, wrong, lockedOut, expired, abandoned, or none.
+    /// ok, wrong, lockedOut, or none.
     pub status: String,
-    /// Tries left before the lockout or abandonment, when wrong.
+    /// Tries left before the lockout, when wrong.
     pub remaining: Option<u32>,
     /// Unix second the lockout lifts, when locked out.
     pub locked_until: Option<i64>,
 }
 
-/// Checks an entered code and, if right, grants a short-lived pass a reveal can
-/// consume. Follows the attempt ladder in the twofa module exactly.
+/// Checks a code from the authenticator and, if right, grants a short-lived
+/// pass a reveal can consume. A run of wrong codes locks the check briefly so
+/// the six-digit space cannot be walked through while one is valid.
 #[tauri::command]
 pub fn verify_2fa(code: String, state: State<AppState>) -> Result<VerifyResult> {
     if !state.is_unlocked() {
         return Err(WalletError::Locked);
     }
+    let secret = crate::appconfig::load(&state.data_dir)?.totp_secret;
+    if secret.is_empty() {
+        return Ok(VerifyResult { status: "none".into(), remaining: None, locked_until: None });
+    }
+
+    let now = crate::now_unix();
     let mut tf = state
         .two_factor
         .lock()
         .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
 
-    let Some(pending) = tf.pending.as_mut() else {
-        return Ok(VerifyResult { status: "none".into(), remaining: None, locked_until: None });
-    };
+    if crate::twofa::locked(tf.locked_until, now) {
+        return Ok(VerifyResult {
+            status: "lockedOut".into(),
+            remaining: None,
+            locked_until: tf.locked_until,
+        });
+    }
 
-    use crate::twofa::Verify;
-    Ok(match pending.verify(code.trim()) {
-        Verify::Ok => {
-            tf.pending = None;
-            tf.pass_expiry = Some(crate::twofa::pass_expires_at());
-            VerifyResult { status: "ok".into(), remaining: None, locked_until: None }
-        }
-        Verify::Wrong { remaining } => VerifyResult {
-            status: "wrong".into(),
-            remaining: Some(remaining),
-            locked_until: None,
-        },
-        Verify::LockedOut { until } => VerifyResult {
+    if crate::totp::verify(&secret, &code)? {
+        tf.wrong = 0;
+        tf.locked_until = None;
+        tf.pass_expiry = Some(crate::twofa::pass_expires_at());
+        return Ok(VerifyResult { status: "ok".into(), remaining: None, locked_until: None });
+    }
+
+    tf.wrong += 1;
+    if let Some(until) = crate::twofa::lock_after(tf.wrong, now) {
+        tf.locked_until = Some(until);
+        tf.wrong = 0;
+        return Ok(VerifyResult {
             status: "lockedOut".into(),
             remaining: None,
             locked_until: Some(until),
-        },
-        Verify::Expired => {
-            tf.pending = None;
-            VerifyResult { status: "expired".into(), remaining: None, locked_until: None }
-        }
-        Verify::Abandoned => {
-            tf.pending = None;
-            VerifyResult { status: "abandoned".into(), remaining: None, locked_until: None }
-        }
+        });
+    }
+    Ok(VerifyResult {
+        status: "wrong".into(),
+        remaining: Some(crate::twofa::LOCK_AT - tf.wrong),
+        locked_until: None,
     })
 }
 
-/// The seed-phrase fallback for two-factor, for when the emailed code cannot be
-/// received. Proving the seed is at least as strong as the code, since the seed
-/// is the wallet, so a correct phrase grants the same short-lived pass.
+/// The seed-phrase fallback for two-factor, for when the authenticator is not
+/// to hand. Proving the seed is at least as strong as a code, since the seed is
+/// the wallet, so a correct phrase grants the same short-lived pass.
 #[tauri::command]
 pub fn verify_2fa_seed(mnemonic: String, state: State<AppState>) -> Result<bool> {
     if !state.is_unlocked() {
@@ -1895,7 +1898,8 @@ pub fn verify_2fa_seed(mnemonic: String, state: State<AppState>) -> Result<bool>
 
     if matches {
         if let Ok(mut tf) = state.two_factor.lock() {
-            tf.pending = None;
+            tf.wrong = 0;
+            tf.locked_until = None;
             tf.pass_expiry = Some(crate::twofa::pass_expires_at());
         }
     }
@@ -1967,63 +1971,25 @@ pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
 // address this wallet owns. No custody, no account of ours; keys never leave
 // the machine, and the calls ride Tor when it is on. The funding send does NOT
 // carry the creator fee: it would change the exact deposit the exchange waits
-// for. Earning happens through the Trocador markup, set below.
+// for.
+//
+// The Trocador API key and markup belong to whoever builds and hands out the
+// program, not the end user, so they are compiled in (see swapcfg.rs) rather
+// than configured per install. Trocador rejects a keyless request, so swaps
+// only work once a key has been baked in.
 // ------------------------------------------------------------------------
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SwapConfigView {
-    /// A key is stored, so swaps can be quoted and created.
-    pub configured: bool,
-    pub has_key: bool,
-    pub markup: f64,
-}
-
-fn swap_config_view(data_dir: &std::path::Path) -> Result<SwapConfigView> {
-    let s = crate::appconfig::load(data_dir)?.swap.unwrap_or_default();
-    Ok(SwapConfigView {
-        configured: !s.api_key.trim().is_empty(),
-        has_key: !s.api_key.is_empty(),
-        markup: s.markup,
-    })
-}
-
-#[tauri::command]
-pub fn swap_config(state: State<AppState>) -> Result<SwapConfigView> {
-    swap_config_view(&state.data_dir)
-}
-
-/// Saves the Trocador key and markup. A blank key keeps the stored one.
-#[tauri::command]
-pub fn set_swap_config(
-    api_key: Option<String>,
-    markup: f64,
-    state: State<AppState>,
-) -> Result<SwapConfigView> {
-    if !state.is_unlocked() {
-        return Err(WalletError::Locked);
-    }
-    let mut cfg = crate::appconfig::load(&state.data_dir)?;
-    let existing = cfg.swap.clone().unwrap_or_default();
-    let api_key = match api_key {
-        Some(k) if !k.trim().is_empty() => k.trim().to_string(),
-        _ => existing.api_key,
-    };
-    let markup = if markup.is_finite() && markup >= 0.0 { markup } else { 0.0 };
-    cfg.swap = Some(crate::appconfig::Swap { api_key, markup });
-    crate::appconfig::save(&state.data_dir, &cfg)?;
-    swap_config_view(&state.data_dir)
-}
-
-fn swap_creds(data_dir: &std::path::Path) -> Result<(String, f64)> {
-    let s = crate::appconfig::load(data_dir)?.swap.unwrap_or_default();
-    if s.api_key.trim().is_empty() {
+/// The compiled-in Trocador key and markup, or a clear error when no key was
+/// built in.
+fn swap_creds() -> Result<(String, f64)> {
+    let key = crate::swapcfg::api_key();
+    if key.trim().is_empty() {
         return Err(WalletError::Unsupported(
-            "Add your Trocador API key in Settings first. It is free from trocador.app."
+            "Swaps are not available in this build: no Trocador key was compiled in."
                 .into(),
         ));
     }
-    Ok((s.api_key, s.markup))
+    Ok((key, crate::swapcfg::markup()))
 }
 
 /// This wallet's own address for an asset, for a swap's payout or refund.
@@ -2052,9 +2018,8 @@ pub async fn swap_quote(
     from: String,
     to: String,
     amount_minor: String,
-    state: State<'_, AppState>,
 ) -> Result<SwapQuote> {
-    let (key, markup) = swap_creds(&state.data_dir)?;
+    let (key, markup) = swap_creds()?;
     let dp_from = chains::swap::decimals(&from)
         .ok_or_else(|| WalletError::Unsupported(format!("{from} cannot be swapped")))?;
     let dp_to = chains::swap::decimals(&to)
@@ -2101,7 +2066,7 @@ pub async fn swap_create(
     amount_minor: String,
     state: State<'_, AppState>,
 ) -> Result<SwapTrade> {
-    let (key, markup) = swap_creds(&state.data_dir)?;
+    let (key, markup) = swap_creds()?;
     let seed = seed_copy(&state)?;
 
     let dp_from = chains::swap::decimals(&from)
@@ -2232,7 +2197,7 @@ pub async fn swap_fund(
 
 /// The current status of a trade, for polling until the proceeds arrive.
 #[tauri::command]
-pub async fn swap_status(id: String, state: State<'_, AppState>) -> Result<String> {
-    let (key, _markup) = swap_creds(&state.data_dir)?;
+pub async fn swap_status(id: String) -> Result<String> {
+    let (key, _markup) = swap_creds()?;
     chains::swap::status(&key, &id).await
 }

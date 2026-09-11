@@ -10,6 +10,7 @@
   import AssetIcon from "../lib/AssetIcon.svelte";
   import SendDialog from "../lib/SendDialog.svelte";
   import TwoFactorPrompt from "../lib/TwoFactorPrompt.svelte";
+  import QrCode from "../lib/QrCode.svelte";
   import { BY_ID } from "../lib/assets";
   import {
     ipc,
@@ -20,7 +21,8 @@
     type Donation,
     type Inactivity,
     type EmailConfig,
-    type SwapConfig,
+    type TwoFactorState,
+    type TotpSetup,
   } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
@@ -190,12 +192,28 @@
     }
   }
 
-  async function toggleTwoFactor() {
+  // Two-factor is TOTP: a secret scanned into an authenticator app. No email,
+  // no server. The email panel above is only for optional reveal notices.
+  let twoFactor = $state<TwoFactorState | null>(null);
+  let totpSetup = $state<TotpSetup | null>(null);
+  let totpCode = $state("");
+
+  $effect(() => {
+    ipc
+      .twoFactorState()
+      .then((s) => (twoFactor = s))
+      .catch(() => {
+        /* the panel shows its off state */
+      });
+  });
+
+  async function startTotp() {
     if (twoFactorBusy) return;
     twoFactorBusy = true;
     twoFactorError = null;
     try {
-      email = await ipc.setTwoFactor(!(email?.twoFactor ?? false));
+      totpSetup = await ipc.beginTotpSetup();
+      totpCode = "";
     } catch (e) {
       twoFactorError = (e as { message?: string }).message ?? String(e);
     } finally {
@@ -203,40 +221,44 @@
     }
   }
 
-  // Swaps through Trocador. The key is the user's own, and doubles as the
-  // identity any markup commission accrues to.
-  let swapCfg = $state<SwapConfig | null>(null);
-  let swapKey = $state("");
-  let swapMarkup = $state(0);
-  let swapBusy = $state(false);
-  let swapError = $state<string | null>(null);
-  let swapOk = $state<string | null>(null);
-
-  $effect(() => {
-    ipc
-      .swapConfig()
-      .then((c) => {
-        swapCfg = c;
-        swapMarkup = c.markup;
-      })
-      .catch(() => {
-        /* the section shows its empty state */
-      });
-  });
-
-  async function saveSwap() {
-    if (swapBusy) return;
-    swapBusy = true;
-    swapError = null;
-    swapOk = null;
+  async function confirmTotp() {
+    if (twoFactorBusy || totpCode.trim().length === 0) return;
+    twoFactorBusy = true;
+    twoFactorError = null;
     try {
-      swapCfg = await ipc.setSwapConfig(swapKey.length ? swapKey : null, swapMarkup);
-      swapKey = "";
-      swapOk = "Saved.";
+      const ok = await ipc.confirmTotp(totpCode.trim());
+      if (ok) {
+        totpSetup = null;
+        totpCode = "";
+        twoFactor = await ipc.twoFactorState();
+      } else {
+        twoFactorError =
+          "That code didn't match. Make sure your phone's clock is right and enter the current code.";
+      }
     } catch (e) {
-      swapError = (e as { message?: string }).message ?? String(e);
+      twoFactorError = (e as { message?: string }).message ?? String(e);
     } finally {
-      swapBusy = false;
+      twoFactorBusy = false;
+    }
+  }
+
+  function cancelTotp() {
+    totpSetup = null;
+    totpCode = "";
+    twoFactorError = null;
+  }
+
+  async function disableTotp() {
+    if (twoFactorBusy) return;
+    twoFactorBusy = true;
+    twoFactorError = null;
+    try {
+      await ipc.disableTwoFactor();
+      twoFactor = await ipc.twoFactorState();
+    } catch (e) {
+      twoFactorError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      twoFactorBusy = false;
     }
   }
 
@@ -777,12 +799,13 @@
   </section>
 
   <section class="card">
-    <h2>Email notifications</h2>
+    <h2>Email notifications <span class="tag">Optional</span></h2>
     <p class="muted">
-      A direct connection to your own mail provider over TLS. The app password
-      is stored encrypted on this machine and goes nowhere but your server.
-      Mail is sent to this same address: a notice whenever the seed phrase or a
-      key is revealed, and the two-factor codes below.
+      Optional, and separate from two-factor. If you set up your own mail
+      provider here, the wallet sends a note to this address whenever the seed
+      phrase or a key is revealed — an out-of-band heads-up if your machine is
+      ever in the wrong hands. Over TLS, with the app password stored encrypted
+      on this machine and sent nowhere but your server. Leave it blank to skip.
     </p>
     <p class="hint-note">
       Use an app-specific password, not your main one. For Gmail the server is
@@ -832,71 +855,67 @@
   <section class="card">
     <h2>Two-factor authentication</h2>
     <p class="muted">
-      A six-digit code by email before the seed phrase or the Monero keys can be
-      shown. The code lasts five minutes; three wrong tries lock it for a minute,
-      and five abandon it and fall back to entering your seed phrase.
+      A six-digit code from an authenticator app (Google Authenticator, Aegis,
+      and the like) before the seed phrase or the Monero keys can be shown. It
+      is fully offline: no email, no server. The code lives on your phone, so
+      someone at this machine cannot produce it. If you lose the phone, your
+      seed phrase still works as a fallback.
     </p>
 
-    {#if email?.twoFactor}
-      <p class="ok-note">
-        On. Revealing your seed or keys asks for an emailed code first.
+    {#if totpSetup}
+      <p class="hint-note">
+        Scan this in your authenticator app, then enter the code it shows to
+        finish.
       </p>
+      <div class="qrwrap">
+        <QrCode value={totpSetup.uri} size={168} />
+      </div>
+      <p class="klabel">Or enter this secret by hand</p>
+      <p class="mono kval selectable">{totpSetup.secret}</p>
+
+      <label class="pfield">
+        <span>Code from the app</span>
+        <input
+          class="mono"
+          bind:value={totpCode}
+          inputmode="numeric"
+          maxlength="6"
+          placeholder="000000"
+          spellcheck="false"
+        />
+      </label>
+
+      {#if twoFactorError}<p class="kerr">{twoFactorError}</p>{/if}
+
+      <div class="crow">
+        <button class="btn" onclick={cancelTotp} disabled={twoFactorBusy}>Cancel</button>
+        <button
+          class="btn btn-primary"
+          onclick={confirmTotp}
+          disabled={twoFactorBusy || totpCode.trim().length === 0}
+        >
+          {twoFactorBusy ? "Checking" : "Turn on two-factor"}
+        </button>
+      </div>
+    {:else if twoFactor?.enabled}
+      <p class="ok-note">On. Revealing your seed or keys asks for a code first.</p>
+      {#if twoFactorError}<p class="kerr">{twoFactorError}</p>{/if}
+      <div class="control">
+        <button class="btn danger-btn" disabled={twoFactorBusy} onclick={disableTotp}>
+          {twoFactorBusy ? "Working" : "Turn off two-factor"}
+        </button>
+      </div>
     {:else}
       <p class="hint-note">
-        Off. Reveals are protected only by the typed confirmation. Set up and
-        save your email above before turning this on.
+        Off. Reveals are protected only by the typed confirmation.
       </p>
+      {#if twoFactorError}<p class="kerr">{twoFactorError}</p>{/if}
+      <div class="control">
+        <button class="btn btn-primary" disabled={twoFactorBusy} onclick={startTotp}>
+          {twoFactorBusy ? "Working" : "Set up two-factor"}
+        </button>
+      </div>
     {/if}
-
-    {#if twoFactorError}<p class="kerr">{twoFactorError}</p>{/if}
-
-    <div class="control">
-      <button
-        class="btn btn-primary"
-        disabled={twoFactorBusy || (!email?.twoFactor && !email?.configured)}
-        onclick={toggleTwoFactor}
-      >
-        {twoFactorBusy
-          ? "Working"
-          : email?.twoFactor
-            ? "Turn off two-factor"
-            : "Turn on two-factor"}
-      </button>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Swaps</h2>
-    <p class="muted">
-      Swaps go through Trocador, a non-custodial aggregator: no account, no KYC,
-      and your keys never leave this machine. It just quotes a rate and hands
-      back a deposit address; the wallet pays it with an ordinary local-signed
-      send, and the other coin comes back to your own address. Calls ride Tor
-      when it is on.
-    </p>
-    <p class="hint-note">
-      Get a free API key at <code class="mono">trocador.app</code>. An optional
-      markup is added on top of the rate and paid to your account, so you earn a
-      little on each swap. Leave it at zero for none.
-    </p>
-
-    <label class="pfield">
-      <span>Trocador API key {#if swapCfg?.hasKey}<em class="stored">stored — leave blank to keep</em>{/if}</span>
-      <input class="mono" type="password" bind:value={swapKey} spellcheck="false" />
-    </label>
-    <label class="pfield">
-      <span>Your markup (%)</span>
-      <input class="mono" type="number" min="0" step="0.1" bind:value={swapMarkup} />
-    </label>
-
-    {#if swapError}<p class="kerr">{swapError}</p>{/if}
-    {#if swapOk}<p class="ok-note">{swapOk}</p>{/if}
-
-    <div class="control">
-      <button class="btn btn-primary" disabled={swapBusy} onclick={saveSwap}>
-        {swapBusy ? "Saving" : "Save swap settings"}
-      </button>
-    </div>
   </section>
 
   <section class="card">
@@ -1199,6 +1218,11 @@
   .pair { display: flex; gap: 10px; align-items: flex-end; }
   .pair .grow { flex: 1; }
   .stored { font-style: normal; color: var(--text-faint); font-size: 11px; }
+  .qrwrap {
+    display: flex; justify-content: center; margin: 14px 0;
+    padding: 14px; background: #fff; border-radius: var(--radius-sm);
+    width: fit-content;
+  }
   .crow .btn { flex: 1; }
   .kerr { margin: 8px 0 0 !important; color: var(--danger); font-size: 12px; }
   .ok-note { margin: 10px 0 0 !important; color: var(--ok); font-size: 12px; }

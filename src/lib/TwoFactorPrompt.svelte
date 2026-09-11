@@ -1,10 +1,9 @@
 <script lang="ts">
-  // The email two-factor gate, shown before a sensitive reveal when two-factor
-  // is on. It sends a code on open, checks what the user types against the
-  // attempt ladder in the core, and offers the seed phrase as a fallback for
-  // when the code cannot be received. On success it calls onpassed; the caller
+  // The two-factor gate, shown before a sensitive reveal when two-factor is on.
+  // The code comes from the user's authenticator app (TOTP) — no email, no
+  // server. It checks what they type, and offers the seed phrase as a fallback
+  // for when the phone is not to hand. On success it calls onpassed; the caller
   // then re-runs the reveal, which now finds a valid pass waiting.
-  import { onMount } from "svelte";
   import { ipc } from "./ipc";
 
   let {
@@ -21,15 +20,13 @@
   let mode = $state<"code" | "seed">("code");
   let code = $state("");
   let seedInput = $state("");
-  let sending = $state(false);
   let verifying = $state(false);
-  let message = $state<string | null>(null);
   let error = $state<string | null>(null);
   let lockedUntil = $state<number | null>(null);
   let now = $state(Math.floor(Date.now() / 1000));
 
   // A clock, running only while a lockout counts down, so the button can
-  // re-enable itself the moment the minute is up.
+  // re-enable itself the moment it lifts.
   $effect(() => {
     if (lockedUntil == null) return;
     const t = setInterval(() => (now = Math.floor(Date.now() / 1000)), 500);
@@ -41,31 +38,10 @@
   );
   const locked = $derived(lockRemaining > 0);
 
-  async function sendCode() {
-    if (sending) return;
-    sending = true;
-    error = null;
-    message = null;
-    try {
-      const res = await ipc.request2fa();
-      message = `A code was sent to ${res.sentTo}. It is good for five minutes.`;
-    } catch (e) {
-      // If the code cannot be sent at all, the seed fallback is the way in.
-      error =
-        ((e as { message?: string }).message ?? String(e)) +
-        " You can use your seed phrase instead.";
-    } finally {
-      sending = false;
-    }
-  }
-
-  onMount(sendCode);
-
   async function submitCode() {
     if (verifying || locked || code.trim().length === 0) return;
     verifying = true;
     error = null;
-    message = null;
     try {
       const res = await ipc.verify2fa(code.trim());
       switch (res.status) {
@@ -81,19 +57,12 @@
         case "lockedOut":
           lockedUntil = res.lockedUntil;
           now = Math.floor(Date.now() / 1000);
-          error =
-            "Too many wrong tries. Wait a minute, then the same code still works.";
+          error = "Too many wrong codes. Wait a moment and try again.";
           code = "";
           break;
-        case "expired":
-          error = "That code expired. Send a new one.";
-          break;
-        case "abandoned":
-          error = "That code is used up. Use your seed phrase instead.";
-          mode = "seed";
-          break;
         case "none":
-          error = "No code is waiting. Send one first.";
+          error = "Two-factor is not set up. Use your seed phrase instead.";
+          mode = "seed";
           break;
       }
     } catch (e) {
@@ -139,7 +108,8 @@
     </header>
 
     <p class="lede muted">
-      Two-factor is on, so to {purpose} you need the code sent to your inbox.
+      Two-factor is on, so to {purpose} enter the current code from your
+      authenticator app.
     </p>
 
     {#if mode === "code"}
@@ -160,12 +130,9 @@
         <p class="hint">Locked for {lockRemaining}s.</p>
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
-      {#if message && !error}<p class="ok">{message}</p>{/if}
 
       <div class="row">
-        <button class="btn" onclick={sendCode} disabled={sending}>
-          {sending ? "Sending" : "Resend code"}
-        </button>
+        <button class="btn" onclick={oncancel}>Cancel</button>
         <button
           class="btn btn-primary"
           onclick={submitCode}
@@ -182,7 +149,7 @@
           error = null;
         }}
       >
-        Can't get the code? Use your seed phrase
+        Don't have your authenticator? Use your seed phrase
       </button>
     {:else}
       <label class="field">
@@ -196,7 +163,7 @@
         ></textarea>
       </label>
       <p class="hint">
-        The seed is the wallet, so proving it is as strong as the code. It is
+        The seed is the wallet, so proving it is as strong as a code. It is
         checked on this machine and goes nowhere.
       </p>
       {#if error}<p class="err">{error}</p>{/if}
@@ -296,11 +263,6 @@
     margin: 8px 0 0;
     font-size: 12px;
     color: var(--danger);
-  }
-  .ok {
-    margin: 8px 0 0;
-    font-size: 12px;
-    color: var(--ok);
   }
   .row {
     display: flex;

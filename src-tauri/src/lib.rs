@@ -10,12 +10,23 @@ mod ipc;
 mod keychain;
 mod session;
 mod store;
+mod swapcfg;
 mod tor;
+mod totp;
 mod twofa;
 
 pub use error::WalletError;
 
 use tauri::Manager;
+
+/// The current Unix time in seconds, shared by the modules that gate on it.
+pub fn now_unix() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 pub fn run() {
     tauri::Builder::default()
@@ -92,14 +103,13 @@ pub fn run() {
             ipc::email_config,
             ipc::set_email_config,
             ipc::send_test_email,
-            ipc::set_two_factor,
             ipc::two_factor_state,
-            ipc::request_2fa,
+            ipc::begin_totp_setup,
+            ipc::confirm_totp,
+            ipc::disable_two_factor,
             ipc::verify_2fa,
             ipc::verify_2fa_seed,
             ipc::reveal_seed,
-            ipc::swap_config,
-            ipc::set_swap_config,
             ipc::swap_quote,
             ipc::swap_create,
             ipc::swap_fund,

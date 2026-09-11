@@ -234,7 +234,6 @@ pub struct Trade {
     pub amount_from: String,
     pub amount_to: String,
     pub payout_address: String,
-    pub refund_address: String,
     pub provider: String,
     pub status: String,
 }
@@ -281,7 +280,6 @@ pub async fn create(
         amount_from: str_field(&v, "amount_from"),
         amount_to: str_field(&v, "amount_to"),
         payout_address: str_field(&v, "address_user"),
-        refund_address: str_field(&v, "refund_address"),
         provider: str_field(&v, "provider"),
         status: str_field(&v, "status"),
     })

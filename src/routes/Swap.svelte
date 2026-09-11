@@ -7,18 +7,9 @@
   import AssetIcon from "../lib/AssetIcon.svelte";
   import Address from "../lib/Address.svelte";
   import { ASSETS, BY_ID, formatAmount, toMinor } from "../lib/assets";
-  import { ipc, type AssetId, type SwapConfig, type SwapQuote, type SwapTrade } from "../lib/ipc";
+  import { ipc, type AssetId, type SwapQuote, type SwapTrade } from "../lib/ipc";
   import { settings } from "../lib/settings.svelte";
   import { wallet } from "../lib/wallet.svelte";
-
-  let config = $state<SwapConfig | null>(null);
-
-  $effect(() => {
-    ipc
-      .swapConfig()
-      .then((c) => (config = c))
-      .catch(() => (config = { configured: false, hasKey: false, markup: 0 }));
-  });
 
   // Only coins this wallet can actually send may be the source. Monero counts
   // only once its daemon is up, since funding it needs the local bridge.
@@ -178,20 +169,7 @@
     <h1>Swap</h1>
   </header>
 
-  {#if config && !config.configured}
-    <section class="card">
-      <h2>Connect Trocador</h2>
-      <p class="muted">
-        Swaps go through Trocador, a non-custodial aggregator: no account, no
-        KYC, and your keys never leave this machine. It needs a free API key,
-        which also lets you set a markup you earn on every swap.
-      </p>
-      <p class="hint">
-        Get a key at <span class="mono">trocador.app</span>, then add it under
-        Settings → Swaps.
-      </p>
-    </section>
-  {:else if txid}
+  {#if txid}
     <section class="card">
       <h2>Swap in progress</h2>
       <p class="muted">

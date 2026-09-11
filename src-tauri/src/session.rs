@@ -36,8 +36,15 @@ pub struct AppState {
 
 #[derive(Default)]
 pub struct TwoFactor {
-    pub pending: Option<crate::twofa::Pending>,
+    /// A freshly generated TOTP secret during setup, before the first code has
+    /// confirmed the authenticator holds it. Never persisted until confirmed.
+    pub pending_secret: Option<String>,
+    /// When the current pass runs out, if a check has been passed.
     pub pass_expiry: Option<i64>,
+    /// Consecutive wrong codes, for the lockout.
+    pub wrong: u32,
+    /// When a lockout lifts, if one is in force.
+    pub locked_until: Option<i64>,
 }
 
 impl AppState {

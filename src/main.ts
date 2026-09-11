@@ -118,32 +118,30 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             return {
               configured: true, host: "smtp.gmail.com", port: 587,
               username: "you@gmail.com", from: "you@gmail.com",
-              hasPassword: true, two_factor: false, twoFactor: false,
+              hasPassword: true,
             };
           case "send_test_email":
             return null;
-          case "set_two_factor":
-            return {
-              configured: true, host: "smtp.gmail.com", port: 587,
-              username: "you@gmail.com", from: "you@gmail.com",
-              hasPassword: true, twoFactor: Boolean(args?.on),
-            };
           case "two_factor_state":
-            return { enabled: true, passValid: false, pending: false };
-          case "request_2fa":
-            return { sentTo: "y***@gmail.com" };
+            return { enabled: false, passValid: false };
+          case "begin_totp_setup":
+            return {
+              secret: "JBSWY3DPEHPK3PXP",
+              uri: "otpauth://totp/ShinyFlakes:wallet?secret=JBSWY3DPEHPK3PXP&issuer=ShinyFlakes&algorithm=SHA1&digits=6&period=30",
+            };
+          case "confirm_totp":
+            return args?.code === "000000";
+          case "disable_two_factor":
+            return null;
           case "verify_2fa":
             // In the mock, 000000 is the code; anything else is wrong.
             return args?.code === "000000"
               ? { status: "ok", remaining: null, lockedUntil: null }
-              : { status: "wrong", remaining: 4, lockedUntil: null };
+              : { status: "wrong", remaining: 2, lockedUntil: null };
           case "verify_2fa_seed":
             return true;
           case "reveal_seed":
             return "mock seed phrase not usable as a wallet";
-          case "swap_config":
-          case "set_swap_config":
-            return { configured: true, hasKey: true, markup: 0.5 };
           case "swap_quote":
             return {
               from: args?.from ?? "SOL", to: args?.to ?? "LTC",

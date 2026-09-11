@@ -231,7 +231,8 @@ export interface SweepResult {
 }
 
 export interface EmailConfig {
-  /** Enough is stored to actually send: server, address, username, password. */
+  /** Enough is stored to actually send: server, address, username, password.
+   *  Used only for optional reveal notices now, not for two-factor. */
   configured: boolean;
   host: string;
   port: number;
@@ -239,38 +240,28 @@ export interface EmailConfig {
   from: string;
   /** A password is stored. Its value never crosses the bridge. */
   hasPassword: boolean;
-  /** Two-factor is armed on these settings. */
-  twoFactor: boolean;
 }
 
 export interface TwoFactorState {
   enabled: boolean;
   /** A recent code check still authorises a reveal. */
   passValid: boolean;
-  /** A code is out and waiting to be entered. */
-  pending: boolean;
 }
 
-export interface CodeSent {
-  /** The masked mailbox the code went to, e.g. "a***@gmail.com". */
-  sentTo: string;
+export interface TotpSetup {
+  /** The base32 secret, for manual entry into an authenticator app. */
+  secret: string;
+  /** The otpauth URI to render as a QR code. */
+  uri: string;
 }
 
 export interface VerifyResult {
-  /** ok, wrong, lockedOut, expired, abandoned, or none. */
-  status: "ok" | "wrong" | "lockedOut" | "expired" | "abandoned" | "none";
-  /** Tries left before the lockout or abandonment, when wrong. */
+  /** ok, wrong, lockedOut, or none. */
+  status: "ok" | "wrong" | "lockedOut" | "none";
+  /** Tries left before the lockout, when wrong. */
   remaining: number | null;
   /** Unix second the lockout lifts, when locked out. */
   lockedUntil: number | null;
-}
-
-export interface SwapConfig {
-  /** A Trocador key is stored, so swaps can be quoted and created. */
-  configured: boolean;
-  hasKey: boolean;
-  /** Percent added on top of the rate, paid to the key's account. */
-  markup: number;
 }
 
 export interface SwapQuote {
@@ -462,7 +453,7 @@ export const ipc = {
    *  Gated by two-factor when it is on; rejects with TwoFactorRequired. */
   revealMoneroKeys: () => call<MoneroKeys>("reveal_monero_keys"),
 
-  /** The mail settings, without the password. */
+  /** The mail settings (for optional reveal notices), without the password. */
   emailConfig: () => call<EmailConfig>("email_config"),
 
   /** Saves the mail settings. A blank password keeps the stored one. */
@@ -477,32 +468,29 @@ export const ipc = {
   /** Sends a test message to the configured mailbox. */
   sendTestEmail: () => call<void>("send_test_email"),
 
-  /** Turns two-factor on or off. Arming it needs a working mailbox. */
-  setTwoFactor: (on: boolean) => call<EmailConfig>("set_two_factor", { on }),
-
-  /** Whether two-factor is on, and whether a pass or a code is live now. */
+  /** Whether two-factor is on, and whether a pass is live now. */
   twoFactorState: () => call<TwoFactorState>("two_factor_state"),
 
-  /** Emails a fresh confirmation code. Returns where it was sent. */
-  request2fa: () => call<CodeSent>("request_2fa"),
+  /** Begins TOTP setup: mints a secret and returns the QR to scan. Nothing is
+   *  saved until a code confirms it. */
+  beginTotpSetup: () => call<TotpSetup>("begin_totp_setup"),
 
-  /** Checks an entered code, advancing the attempt ladder. */
+  /** Confirms setup with a code from the authenticator; turns two-factor on. */
+  confirmTotp: (code: string) => call<boolean>("confirm_totp", { code }),
+
+  /** Turns two-factor off and forgets the secret. */
+  disableTwoFactor: () => call<void>("disable_two_factor"),
+
+  /** Checks a code from the authenticator, advancing the lockout on wrong. */
   verify2fa: (code: string) => call<VerifyResult>("verify_2fa", { code }),
 
-  /** The seed-phrase fallback when the code cannot be received. */
+  /** The seed-phrase fallback when the authenticator is not to hand. */
   verify2faSeed: (mnemonic: string) =>
     call<boolean>("verify_2fa_seed", { mnemonic }),
 
   /** The seed phrase, for backup. Gated by two-factor when on; every reveal
-   *  sends a notice to the mailbox. */
+   *  sends a notice to the mailbox if one is configured. */
   revealSeed: () => call<string>("reveal_seed"),
-
-  /** The stored Trocador key state and markup. The key never crosses back. */
-  swapConfig: () => call<SwapConfig>("swap_config"),
-
-  /** Saves the Trocador key and markup. A blank key keeps the stored one. */
-  setSwapConfig: (apiKey: string | null, markup: number) =>
-    call<SwapConfig>("set_swap_config", { apiKey, markup }),
 
   /** A swap rate. Reaches Trocador; broadcasts nothing. */
   swapQuote: (from: AssetId, to: AssetId, amountMinor: string) =>

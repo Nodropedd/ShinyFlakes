@@ -1,26 +1,20 @@
-//! Email two-factor codes for the sensitive reveals.
+//! The state around the two-factor gate: the short-lived pass a reveal
+//! consumes, and the lockout that slows down guessing.
 //!
-//! A six-digit code is generated, emailed, and held only in memory with a
-//! short life. The attempt policy follows the spec exactly: three wrong tries,
-//! then a one-minute lockout on the same code, two more tries after it, and on
-//! the fifth failure the code is abandoned and the caller falls back to the
-//! seed phrase. Getting it right hands back a short-lived pass that a reveal
-//! consumes.
-//!
-//! Six digits, not four, so the space is a million rather than ten thousand.
+//! The codes themselves are TOTP now (see [`crate::totp`]), computed from a
+//! secret on the user's phone rather than emailed, so there is no code to store
+//! here. What remains is timing: a correct check hands out a pass good for a
+//! couple of minutes, and a run of wrong codes locks the check briefly so the
+//! six-digit space cannot be walked through while a code is valid.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::Rng;
-
-/// How long a freshly issued code stays valid.
-const CODE_TTL: i64 = 5 * 60;
-/// The lockout after the third wrong try.
-const LOCKOUT: i64 = 60;
-/// How long a passed check authorises a reveal before it must be redone.
+/// How long a passed check authorises reveals before it must be redone.
 const PASS_TTL: i64 = 2 * 60;
-const MAX_ATTEMPTS: u32 = 5;
-const LOCK_AT: u32 = 3;
+/// Wrong tries before a lockout kicks in.
+pub const LOCK_AT: u32 = 3;
+/// How long that lockout lasts.
+pub const LOCKOUT: i64 = 60;
 
 fn now() -> i64 {
     SystemTime::now()
@@ -29,80 +23,8 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// A code in flight.
-#[derive(Clone)]
-pub struct Pending {
-    code: String,
-    created: i64,
-    attempts: u32,
-    locked_until: Option<i64>,
-}
-
-/// The outcome of checking an entered code.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Verify {
-    /// Correct. The caller may proceed, and gets a pass valid for a short time.
-    Ok,
-    /// Wrong, with this many tries left before the lockout or abandonment.
-    Wrong { remaining: u32 },
-    /// Locked out until this Unix second; the same code stays valid after.
-    LockedOut { until: i64 },
-    /// The code aged out. A new one must be requested.
-    Expired,
-    /// Five failures. The code is dead; fall back to the seed phrase.
-    Abandoned,
-}
-
-/// A fresh six-digit code, zero-padded so every code is six characters.
-pub fn new_code() -> String {
-    let n: u32 = rand::rngs::OsRng.gen_range(0..1_000_000);
-    format!("{n:06}")
-}
-
-pub fn begin(code: String) -> Pending {
-    Pending {
-        code,
-        created: now(),
-        attempts: 0,
-        locked_until: None,
-    }
-}
-
-impl Pending {
-    /// Checks an entered code and advances the ladder.
-    pub fn verify(&mut self, input: &str) -> Verify {
-        self.verify_at(input, now())
-    }
-
-    fn verify_at(&mut self, input: &str, at: i64) -> Verify {
-        if at - self.created >= CODE_TTL {
-            return Verify::Expired;
-        }
-        if let Some(until) = self.locked_until {
-            if at < until {
-                return Verify::LockedOut { until };
-            }
-        }
-        if input == self.code {
-            return Verify::Ok;
-        }
-
-        self.attempts += 1;
-
-        if self.attempts >= MAX_ATTEMPTS {
-            return Verify::Abandoned;
-        }
-        if self.attempts == LOCK_AT {
-            self.locked_until = Some(at + LOCKOUT);
-            return Verify::LockedOut { until: at + LOCKOUT };
-        }
-        Verify::Wrong {
-            remaining: MAX_ATTEMPTS - self.attempts,
-        }
-    }
-}
-
-/// The moment a check passed, so a reveal can confirm it was recent.
+/// The moment a check passed plus its lifetime, so a reveal can confirm it was
+/// recent.
 pub fn pass_expires_at() -> i64 {
     now() + PASS_TTL
 }
@@ -112,75 +34,44 @@ pub fn pass_valid(expiry: i64) -> bool {
     now() < expiry
 }
 
+/// After a wrong code takes the count to `wrong`, the Unix second a lockout
+/// should run until, or `None` while still under the threshold.
+pub fn lock_after(wrong: u32, at: i64) -> Option<i64> {
+    if wrong >= LOCK_AT {
+        Some(at + LOCKOUT)
+    } else {
+        None
+    }
+}
+
+/// Whether a lockout set to lift at `until` is still in force.
+pub fn locked(until: Option<i64>, at: i64) -> bool {
+    matches!(until, Some(u) if at < u)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn pending() -> Pending {
-        Pending {
-            code: "123456".into(),
-            created: 1000,
-            attempts: 0,
-            locked_until: None,
-        }
-    }
-
-    #[test]
-    fn a_correct_code_passes() {
-        let mut p = pending();
-        assert_eq!(p.verify_at("123456", 1010), Verify::Ok);
-    }
-
-    #[test]
-    fn codes_are_six_digits() {
-        for _ in 0..200 {
-            let c = new_code();
-            assert_eq!(c.len(), 6);
-            assert!(c.chars().all(|d| d.is_ascii_digit()));
-        }
-    }
-
-    #[test]
-    fn three_wrong_tries_lock_it_for_a_minute() {
-        let mut p = pending();
-        assert_eq!(p.verify_at("000000", 1001), Verify::Wrong { remaining: 4 });
-        assert_eq!(p.verify_at("000000", 1002), Verify::Wrong { remaining: 3 });
-        // The third wrong try triggers the lockout.
-        assert_eq!(p.verify_at("000000", 1003), Verify::LockedOut { until: 1063 });
-        // During the lockout, even the right code is held off.
-        assert_eq!(p.verify_at("123456", 1030), Verify::LockedOut { until: 1063 });
-    }
-
-    #[test]
-    fn the_same_code_still_works_after_the_lockout() {
-        let mut p = pending();
-        for t in 1..=3 {
-            p.verify_at("000000", 1000 + t);
-        }
-        // After the minute, the original code is accepted.
-        assert_eq!(p.verify_at("123456", 1064), Verify::Ok);
-    }
-
-    #[test]
-    fn the_fifth_failure_abandons_it() {
-        let mut p = pending();
-        p.verify_at("000000", 1001); // 1
-        p.verify_at("000000", 1002); // 2
-        p.verify_at("000000", 1003); // 3 -> lock until 1063
-        p.verify_at("000000", 1064); // 4
-        // The fifth wrong try, past the lockout, kills the code.
-        assert_eq!(p.verify_at("000000", 1065), Verify::Abandoned);
-    }
-
-    #[test]
-    fn an_expired_code_is_rejected() {
-        let mut p = pending();
-        assert_eq!(p.verify_at("123456", 1000 + CODE_TTL), Verify::Expired);
-    }
 
     #[test]
     fn a_pass_ages_out() {
         assert!(pass_valid(now() + 30));
         assert!(!pass_valid(now() - 1));
+    }
+
+    #[test]
+    fn the_lockout_starts_on_the_third_wrong_try() {
+        assert_eq!(lock_after(1, 1000), None);
+        assert_eq!(lock_after(2, 1000), None);
+        assert_eq!(lock_after(3, 1000), Some(1060));
+        assert_eq!(lock_after(4, 1000), Some(1060));
+    }
+
+    #[test]
+    fn a_lockout_holds_until_its_moment() {
+        assert!(locked(Some(1060), 1030));
+        assert!(!locked(Some(1060), 1060));
+        assert!(!locked(Some(1060), 1090));
+        assert!(!locked(None, 1030));
     }
 }
