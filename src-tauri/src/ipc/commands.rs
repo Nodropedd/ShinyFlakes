@@ -1061,22 +1061,27 @@ pub struct MoneroKeys {
 /// Monero keys is this wallet's own convention rather than a standard. These
 /// two keys are therefore the only way to reach the account from any other
 /// Monero wallet, and they are spending authority: anyone holding the spend
-/// key owns the funds.
+/// key owns the funds. That makes this a sensitive reveal, so it is gated by
+/// two-factor when it is on and always sends a notice afterwards.
 #[tauri::command]
-pub fn reveal_monero_keys(state: State<AppState>) -> Result<MoneroKeys> {
+pub async fn reveal_monero_keys(state: State<'_, AppState>) -> Result<MoneroKeys> {
+    require_2fa(&state)?;
     let seed = seed_copy(&state)?;
     let keys = chains::xmr::keys(&seed)?;
 
     let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
 
-    Ok(MoneroKeys {
+    let out = MoneroKeys {
         address: chains::xmr::address(&seed)?,
         spend_key: hex(keys.spend.to_bytes()),
         view_key: hex(keys.view.to_bytes()),
         // The account was created by this wallet, so nothing before that
         // matters and a restore can skip most of the chain.
         restore_height_hint: "the block height when you first received Monero here".into(),
-    })
+    };
+
+    notify_reveal(&state.data_dir, "Monero private keys").await;
+    Ok(out)
 }
 
 /// Checks the local Monero wallet daemon is up and holding this account.
@@ -1580,4 +1585,376 @@ pub async fn monero_stop(
     state.stop_monero();
     chains::xmr_setup::stop_any(&data_dir);
     Ok(chains::xmr_setup::state(&data_dir, false))
+}
+
+// ------------------------------------------------------------------------
+// Email and two-factor
+//
+// The mailbox belongs to the user, and codes and notices go only to it. The
+// app password is held in the keychain-sealed config file, never shown back to
+// the front end. Two-factor gates the sensitive reveals, and any reveal, gated
+// or not, sends the mailbox a notice so a theft of the device is not silent.
+// ------------------------------------------------------------------------
+
+/// The mail configuration as the UI may see it: everything but the password,
+/// plus whether one is stored and whether two-factor is armed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmailConfigView {
+    /// True when enough is stored to actually send: host, from, username, and
+    /// a password all present.
+    pub configured: bool,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub from: String,
+    pub has_password: bool,
+    pub two_factor: bool,
+}
+
+fn email_config_view(data_dir: &std::path::Path) -> Result<EmailConfigView> {
+    let cfg = crate::appconfig::load(data_dir)?;
+    let smtp = cfg.smtp.unwrap_or_default();
+    let has_password = !smtp.password.is_empty();
+    Ok(EmailConfigView {
+        configured: !smtp.host.is_empty()
+            && !smtp.from.is_empty()
+            && !smtp.username.is_empty()
+            && has_password,
+        host: smtp.host,
+        // A never-set port reads back as a sensible STARTTLS default so the
+        // field is not blank on first open.
+        port: if smtp.port == 0 { 587 } else { smtp.port },
+        username: smtp.username,
+        from: smtp.from,
+        has_password,
+        two_factor: cfg.two_factor,
+    })
+}
+
+/// Whether enough is stored to send, matching `configured` above.
+fn smtp_sendable(smtp: &crate::appconfig::Smtp) -> bool {
+    !smtp.host.is_empty()
+        && !smtp.from.is_empty()
+        && !smtp.username.is_empty()
+        && !smtp.password.is_empty()
+}
+
+#[tauri::command]
+pub fn email_config(state: State<AppState>) -> Result<EmailConfigView> {
+    email_config_view(&state.data_dir)
+}
+
+/// Saves the mail settings. A blank password keeps the one already stored, so
+/// changing the host does not force retyping the app password.
+#[tauri::command]
+pub fn set_email_config(
+    host: String,
+    port: u16,
+    username: String,
+    password: Option<String>,
+    from: String,
+    state: State<AppState>,
+) -> Result<EmailConfigView> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    let existing = cfg.smtp.clone().unwrap_or_default();
+    let password = match password {
+        Some(p) if !p.is_empty() => p,
+        _ => existing.password,
+    };
+
+    cfg.smtp = Some(crate::appconfig::Smtp {
+        host: host.trim().to_string(),
+        port: if port == 0 { 587 } else { port },
+        username: username.trim().to_string(),
+        password,
+        from: from.trim().to_string(),
+    });
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+    email_config_view(&state.data_dir)
+}
+
+/// Sends a test message to the configured mailbox, so the user can confirm the
+/// settings work before arming two-factor on them.
+#[tauri::command]
+pub async fn send_test_email(state: State<'_, AppState>) -> Result<()> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let smtp = crate::appconfig::load(&state.data_dir)?
+        .smtp
+        .filter(smtp_sendable)
+        .ok_or_else(|| {
+            WalletError::Unsupported(
+                "The mail settings are incomplete. Fill in the server, username, \
+                 password and address first."
+                    .into(),
+            )
+        })?;
+
+    crate::email::send(
+        &smtp,
+        "ShinyFlakes: test message",
+        "This confirms ShinyFlakes can send mail through your server. If you \
+         asked for this, your settings are working.",
+    )
+    .await
+}
+
+/// Turns two-factor on or off. Arming it needs a working mailbox, since the
+/// codes have nowhere else to go. Turning it off drops any code in flight.
+#[tauri::command]
+pub fn set_two_factor(on: bool, state: State<AppState>) -> Result<EmailConfigView> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    if on && !cfg.smtp.as_ref().map(smtp_sendable).unwrap_or(false) {
+        return Err(WalletError::Unsupported(
+            "Set up and test your mail server before turning on two-factor.".into(),
+        ));
+    }
+
+    cfg.two_factor = on;
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+
+    if !on {
+        if let Ok(mut tf) = state.two_factor.lock() {
+            *tf = crate::session::TwoFactor::default();
+        }
+    }
+
+    email_config_view(&state.data_dir)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TwoFactorState {
+    pub enabled: bool,
+    /// A recent code check still authorises a reveal.
+    pub pass_valid: bool,
+    /// A code has been sent and is waiting to be entered.
+    pub pending: bool,
+}
+
+#[tauri::command]
+pub fn two_factor_state(state: State<AppState>) -> Result<TwoFactorState> {
+    let enabled = crate::appconfig::load(&state.data_dir)?.two_factor;
+    let (pass_valid, pending) = state
+        .two_factor
+        .lock()
+        .map(|tf| {
+            (
+                tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false),
+                tf.pending.is_some(),
+            )
+        })
+        .unwrap_or((false, false));
+    Ok(TwoFactorState { enabled, pass_valid, pending })
+}
+
+/// Keeps the first letter and the domain, so the prompt can say where the code
+/// went without printing the whole address.
+fn mask_email(addr: &str) -> String {
+    match addr.split_once('@') {
+        Some((user, domain)) => {
+            let first = user.chars().next().unwrap_or('*');
+            format!("{first}***@{domain}")
+        }
+        None => "your inbox".into(),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeSent {
+    /// The masked mailbox the code went to.
+    pub sent_to: String,
+}
+
+/// Generates a code, emails it, and holds it in memory to check against.
+///
+/// The code is stored only after the mail is accepted, so a send failure never
+/// leaves a code waiting that the user never received.
+#[tauri::command]
+pub async fn request_2fa(state: State<'_, AppState>) -> Result<CodeSent> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let cfg = crate::appconfig::load(&state.data_dir)?;
+    if !cfg.two_factor {
+        return Err(WalletError::Unsupported("Two-factor is not turned on.".into()));
+    }
+    let smtp = cfg.smtp.filter(smtp_sendable).ok_or_else(|| {
+        WalletError::Unsupported("No mailbox is configured to send the code to.".into())
+    })?;
+
+    let code = crate::twofa::new_code();
+    crate::email::send(
+        &smtp,
+        "ShinyFlakes: your confirmation code",
+        &format!(
+            "Your confirmation code is {code}.\n\nIt is good for five minutes. If \
+             you did not just ask to reveal something sensitive in your wallet, \
+             someone may be at your machine."
+        ),
+    )
+    .await?;
+
+    if let Ok(mut tf) = state.two_factor.lock() {
+        tf.pending = Some(crate::twofa::begin(code));
+        tf.pass_expiry = None;
+    }
+
+    Ok(CodeSent { sent_to: mask_email(&smtp.from) })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyResult {
+    /// ok, wrong, lockedOut, expired, abandoned, or none.
+    pub status: String,
+    /// Tries left before the lockout or abandonment, when wrong.
+    pub remaining: Option<u32>,
+    /// Unix second the lockout lifts, when locked out.
+    pub locked_until: Option<i64>,
+}
+
+/// Checks an entered code and, if right, grants a short-lived pass a reveal can
+/// consume. Follows the attempt ladder in the twofa module exactly.
+#[tauri::command]
+pub fn verify_2fa(code: String, state: State<AppState>) -> Result<VerifyResult> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let mut tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+
+    let Some(pending) = tf.pending.as_mut() else {
+        return Ok(VerifyResult { status: "none".into(), remaining: None, locked_until: None });
+    };
+
+    use crate::twofa::Verify;
+    Ok(match pending.verify(code.trim()) {
+        Verify::Ok => {
+            tf.pending = None;
+            tf.pass_expiry = Some(crate::twofa::pass_expires_at());
+            VerifyResult { status: "ok".into(), remaining: None, locked_until: None }
+        }
+        Verify::Wrong { remaining } => VerifyResult {
+            status: "wrong".into(),
+            remaining: Some(remaining),
+            locked_until: None,
+        },
+        Verify::LockedOut { until } => VerifyResult {
+            status: "lockedOut".into(),
+            remaining: None,
+            locked_until: Some(until),
+        },
+        Verify::Expired => {
+            tf.pending = None;
+            VerifyResult { status: "expired".into(), remaining: None, locked_until: None }
+        }
+        Verify::Abandoned => {
+            tf.pending = None;
+            VerifyResult { status: "abandoned".into(), remaining: None, locked_until: None }
+        }
+    })
+}
+
+/// The seed-phrase fallback for two-factor, for when the emailed code cannot be
+/// received. Proving the seed is at least as strong as the code, since the seed
+/// is the wallet, so a correct phrase grants the same short-lived pass.
+#[tauri::command]
+pub fn verify_2fa_seed(mnemonic: String, state: State<AppState>) -> Result<bool> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let entered = Zeroizing::new(mnemonic);
+    let parsed = seed::parse(&entered)?;
+
+    let matches = {
+        let guard = state
+            .unlocked
+            .lock()
+            .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
+        match guard.as_ref() {
+            Some(session) => {
+                ct_eq(parsed.to_string().as_bytes(), session.mnemonic.as_bytes())
+            }
+            None => return Err(WalletError::Locked),
+        }
+    };
+
+    if matches {
+        if let Ok(mut tf) = state.two_factor.lock() {
+            tf.pending = None;
+            tf.pass_expiry = Some(crate::twofa::pass_expires_at());
+        }
+    }
+    Ok(matches)
+}
+
+/// Requires a valid two-factor pass when two-factor is on, and consumes it.
+///
+/// When two-factor is off this is a no-op: the session is already unlocked,
+/// which needed the seed. When it is on, a pass from a recent code check must
+/// be present and unexpired; it is cleared here so each reveal needs its own.
+fn require_2fa(state: &State<AppState>) -> Result<()> {
+    if !crate::appconfig::load(&state.data_dir)?.two_factor {
+        return Ok(());
+    }
+    let mut tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+    let valid = tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false);
+    if !valid {
+        return Err(WalletError::TwoFactorRequired);
+    }
+    tf.pass_expiry = None;
+    Ok(())
+}
+
+/// Emails the "something was revealed" notice, best effort. A missing or broken
+/// mail setup must never block a reveal the user asked for.
+async fn notify_reveal(data_dir: &std::path::Path, what: &str) {
+    if let Ok(cfg) = crate::appconfig::load(data_dir) {
+        if let Some(smtp) = cfg.smtp.filter(smtp_sendable) {
+            let _ = crate::email::send(
+                &smtp,
+                "ShinyFlakes: a secret was revealed",
+                &crate::email::reveal_body(what),
+            )
+            .await;
+        }
+    }
+}
+
+/// The seed phrase, for backup. Gated by two-factor when it is on, and every
+/// reveal sends a notice to the configured mailbox.
+#[tauri::command]
+pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
+    require_2fa(&state)?;
+
+    let mnemonic = {
+        let guard = state
+            .unlocked
+            .lock()
+            .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
+        match guard.as_ref() {
+            Some(session) => session.mnemonic.to_string(),
+            None => return Err(WalletError::Locked),
+        }
+    };
+
+    notify_reveal(&state.data_dir, "seed phrase").await;
+    Ok(mnemonic)
 }

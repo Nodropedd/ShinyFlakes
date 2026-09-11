@@ -1,6 +1,8 @@
+mod appconfig;
 mod chains;
 mod crypto;
 mod donation;
+mod email;
 mod error;
 mod fee;
 mod inactivity;
@@ -9,6 +11,7 @@ mod keychain;
 mod session;
 mod store;
 mod tor;
+mod twofa;
 
 pub use error::WalletError;
 
@@ -86,6 +89,15 @@ pub fn run() {
             ipc::inactivity_set_action,
             ipc::inactivity_sweep,
             ipc::set_vault_passphrase,
+            ipc::email_config,
+            ipc::set_email_config,
+            ipc::send_test_email,
+            ipc::set_two_factor,
+            ipc::two_factor_state,
+            ipc::request_2fa,
+            ipc::verify_2fa,
+            ipc::verify_2fa_seed,
+            ipc::reveal_seed,
         ])
         .build(tauri::generate_context!())
         .expect("ShinyFlakes failed to start")

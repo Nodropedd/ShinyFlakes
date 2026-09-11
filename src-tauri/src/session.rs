@@ -29,6 +29,15 @@ pub struct AppState {
     /// It is not tied to lock, since browsing balances is not privileged and
     /// tearing Tor down on every lock would make it slow to come back.
     pub tor: Mutex<Option<std::process::Child>>,
+    /// The two-factor code in flight and, once one is passed, when that pass
+    /// runs out. Both are cleared on lock along with the keys.
+    pub two_factor: Mutex<TwoFactor>,
+}
+
+#[derive(Default)]
+pub struct TwoFactor {
+    pub pending: Option<crate::twofa::Pending>,
+    pub pass_expiry: Option<i64>,
 }
 
 impl AppState {
@@ -39,6 +48,7 @@ impl AppState {
             data_dir,
             monero: Mutex::new(None),
             tor: Mutex::new(None),
+            two_factor: Mutex::new(TwoFactor::default()),
         }
     }
 
@@ -78,6 +88,11 @@ impl AppState {
     pub fn wipe(&self) {
         if let Ok(mut guard) = self.unlocked.lock() {
             *guard = None;
+        }
+        // A pending code or a live two-factor pass must not survive a lock,
+        // or it could gate a reveal for whoever unlocks next.
+        if let Ok(mut tf) = self.two_factor.lock() {
+            *tf = TwoFactor::default();
         }
         // That daemon holds an open Monero wallet, so locking has to close it
         // too. Otherwise the money stays reachable after the keys are gone.

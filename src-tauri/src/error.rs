@@ -40,6 +40,9 @@ pub enum WalletError {
     #[error("{0}")]
     Funds(String),
 
+    #[error("Two-factor confirmation is required first.")]
+    TwoFactorRequired,
+
     #[error(
         "This machine has a wallet file but no longer holds the key that          decrypts it. The key lives in the Windows credential store and it          is gone. Restore from your seed phrase on a fresh install."
     )]
@@ -63,6 +66,7 @@ impl WalletError {
             Self::Network(_) => "Network",
             Self::Unsupported(_) => "Unsupported",
             Self::Funds(_) => "Funds",
+            Self::TwoFactorRequired => "TwoFactorRequired",
             Self::KeyMissing => "KeyMissing",
         }
     }

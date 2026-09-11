@@ -24,7 +24,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
       /* ignore */
     }
     w.__TAURI_INTERNALS__ = {
-      invoke: async (cmd: string) => {
+      invoke: async (cmd: string, args?: Record<string, unknown>) => {
         switch (cmd) {
           case "vault_status":
             return { initialized: true, unlocked: true, needsPassphrase: false };
@@ -113,6 +113,34 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               spendKey: "0".repeat(64), viewKey: "0".repeat(64),
               restoreHeightHint: "the block height when you first received Monero here",
             };
+          case "email_config":
+          case "set_email_config":
+            return {
+              configured: true, host: "smtp.gmail.com", port: 587,
+              username: "you@gmail.com", from: "you@gmail.com",
+              hasPassword: true, two_factor: false, twoFactor: false,
+            };
+          case "send_test_email":
+            return null;
+          case "set_two_factor":
+            return {
+              configured: true, host: "smtp.gmail.com", port: 587,
+              username: "you@gmail.com", from: "you@gmail.com",
+              hasPassword: true, twoFactor: Boolean(args?.on),
+            };
+          case "two_factor_state":
+            return { enabled: true, passValid: false, pending: false };
+          case "request_2fa":
+            return { sentTo: "y***@gmail.com" };
+          case "verify_2fa":
+            // In the mock, 000000 is the code; anything else is wrong.
+            return args?.code === "000000"
+              ? { status: "ok", remaining: null, lockedUntil: null }
+              : { status: "wrong", remaining: 4, lockedUntil: null };
+          case "verify_2fa_seed":
+            return true;
+          case "reveal_seed":
+            return "mock seed phrase not usable as a wallet";
           case "send_limits":
             return {
               asset: "SOL", balanceMinor: "9684292", feeMinor: "5000",

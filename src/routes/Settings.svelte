@@ -9,6 +9,7 @@
   import { wallet } from "../lib/wallet.svelte";
   import AssetIcon from "../lib/AssetIcon.svelte";
   import SendDialog from "../lib/SendDialog.svelte";
+  import TwoFactorPrompt from "../lib/TwoFactorPrompt.svelte";
   import { BY_ID } from "../lib/assets";
   import {
     ipc,
@@ -18,28 +19,64 @@
     type AssetId,
     type Donation,
     type Inactivity,
+    type EmailConfig,
   } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
 
-  // Monero keys are spending authority, so revealing them is deliberate:
-  // typed confirmation, and they are dropped again on leaving the screen.
+  // Sensitive reveals are deliberate: a typed confirmation, then two-factor
+  // when it is on, and the secret is dropped again on leaving the screen.
   const REVEAL_WORD = "REVEAL";
+
+  // A reveal waiting on two-factor. When set, the prompt is shown; passing it
+  // re-runs the stored action, which now finds a valid pass in the core.
+  let twoFactorFor = $state<
+    null | { purpose: string; run: () => Promise<void> }
+  >(null);
+
+  // Runs a reveal, and if the core answers that two-factor is needed, opens the
+  // prompt instead of failing. Every other error the run itself reports.
+  async function guarded(purpose: string, run: () => Promise<void>) {
+    try {
+      await run();
+    } catch (e) {
+      if ((e as { kind?: string }).kind === "TwoFactorRequired") {
+        twoFactorFor = { purpose, run };
+      } else {
+        throw e;
+      }
+    }
+  }
+
+  async function twoFactorPassed() {
+    const pending = twoFactorFor;
+    twoFactorFor = null;
+    // The run reports its own non-2FA errors; a repeat 2FA prompt would be an
+    // odd edge, so it is simply swallowed and the user can retry.
+    if (pending) await pending.run().catch(() => {});
+  }
+
+  // Monero keys.
   let askingKeys = $state(false);
   let confirmWord = $state("");
   let moneroKeys = $state<MoneroKeys | null>(null);
   let keysError = $state<string | null>(null);
 
-  async function revealKeys() {
-    if (confirmWord.trim().toUpperCase() !== REVEAL_WORD) return;
+  async function doRevealKeys() {
     keysError = null;
     try {
       moneroKeys = await ipc.revealMoneroKeys();
       askingKeys = false;
       confirmWord = "";
     } catch (e) {
+      if ((e as { kind?: string }).kind === "TwoFactorRequired") throw e;
       keysError = (e as { message?: string }).message ?? String(e);
     }
+  }
+
+  async function revealKeys() {
+    if (confirmWord.trim().toUpperCase() !== REVEAL_WORD) return;
+    await guarded("reveal your Monero keys", doRevealKeys);
   }
 
   function hideKeys() {
@@ -49,7 +86,121 @@
     keysError = null;
   }
 
-  $effect(() => () => hideKeys());
+  // Seed phrase.
+  let askingSeed = $state(false);
+  let seedWord = $state("");
+  let seedPhrase = $state<string | null>(null);
+  let seedError = $state<string | null>(null);
+
+  async function doRevealSeed() {
+    seedError = null;
+    try {
+      seedPhrase = await ipc.revealSeed();
+      askingSeed = false;
+      seedWord = "";
+    } catch (e) {
+      if ((e as { kind?: string }).kind === "TwoFactorRequired") throw e;
+      seedError = (e as { message?: string }).message ?? String(e);
+    }
+  }
+
+  async function revealSeed() {
+    if (seedWord.trim().toUpperCase() !== REVEAL_WORD) return;
+    await guarded("reveal your seed phrase", doRevealSeed);
+  }
+
+  function hideSeed() {
+    seedPhrase = null;
+    askingSeed = false;
+    seedWord = "";
+    seedError = null;
+  }
+
+  // Nothing sensitive lingers when the screen is left.
+  $effect(() => () => {
+    hideKeys();
+    hideSeed();
+    twoFactorFor = null;
+  });
+
+  // Email and two-factor.
+  let email = $state<EmailConfig | null>(null);
+  let smtpHost = $state("");
+  let smtpPort = $state(587);
+  let smtpUser = $state("");
+  let smtpPass = $state("");
+  let smtpFrom = $state("");
+  let emailBusy = $state(false);
+  let testing = $state(false);
+  let emailError = $state<string | null>(null);
+  let emailOk = $state<string | null>(null);
+  let twoFactorBusy = $state(false);
+  let twoFactorError = $state<string | null>(null);
+
+  $effect(() => {
+    ipc
+      .emailConfig()
+      .then((c) => {
+        email = c;
+        smtpHost = c.host;
+        smtpPort = c.port;
+        smtpUser = c.username;
+        smtpFrom = c.from;
+      })
+      .catch(() => {
+        /* the section shows its empty state */
+      });
+  });
+
+  async function saveEmail() {
+    if (emailBusy) return;
+    emailBusy = true;
+    emailError = null;
+    emailOk = null;
+    try {
+      email = await ipc.setEmailConfig(
+        smtpHost,
+        smtpPort,
+        smtpUser,
+        smtpPass.length ? smtpPass : null,
+        smtpFrom,
+      );
+      smtpPass = "";
+      emailOk = "Saved.";
+    } catch (e) {
+      emailError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      emailBusy = false;
+    }
+  }
+
+  async function testEmail() {
+    if (testing) return;
+    testing = true;
+    emailError = null;
+    emailOk = null;
+    try {
+      await ipc.sendTestEmail();
+      emailOk = "Test message sent. Check your inbox.";
+    } catch (e) {
+      emailError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      testing = false;
+    }
+  }
+
+  async function toggleTwoFactor() {
+    if (twoFactorBusy) return;
+    twoFactorBusy = true;
+    twoFactorError = null;
+    try {
+      email = await ipc.setTwoFactor(!(email?.twoFactor ?? false));
+    } catch (e) {
+      twoFactorError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      twoFactorBusy = false;
+    }
+  }
 
   const DEFAULT_ACCENT = "#f2c14e";
 
@@ -587,22 +738,139 @@
     {/if}
   </section>
 
-  <section class="card pending">
-    <h2>Email notifications <span class="tag">Not built</span></h2>
+  <section class="card">
+    <h2>Email notifications</h2>
     <p class="muted">
-      A direct SMTP connection to your own mail provider, with the app password
-      stored encrypted on this machine. Sends a notice whenever the seed phrase
-      is revealed, and carries two-factor codes.
+      A direct connection to your own mail provider over TLS. The app password
+      is stored encrypted on this machine and goes nowhere but your server.
+      Mail is sent to this same address: a notice whenever the seed phrase or a
+      key is revealed, and the two-factor codes below.
     </p>
+    <p class="hint-note">
+      Use an app-specific password, not your main one. For Gmail the server is
+      <code class="mono">smtp.gmail.com</code> on port 587.
+    </p>
+
+    <label class="pfield">
+      <span>SMTP server</span>
+      <input class="mono" bind:value={smtpHost} spellcheck="false" placeholder="smtp.gmail.com" />
+    </label>
+    <div class="pair">
+      <label class="pfield">
+        <span>Port</span>
+        <input class="mono" type="number" bind:value={smtpPort} />
+      </label>
+      <label class="pfield grow">
+        <span>Username</span>
+        <input class="mono" bind:value={smtpUser} spellcheck="false" placeholder="you@gmail.com" />
+      </label>
+    </div>
+    <label class="pfield">
+      <span>Your email address</span>
+      <input class="mono" bind:value={smtpFrom} spellcheck="false" placeholder="you@gmail.com" />
+    </label>
+    <label class="pfield">
+      <span>App password {#if email?.hasPassword}<em class="stored">stored — leave blank to keep</em>{/if}</span>
+      <input class="mono" type="password" bind:value={smtpPass} spellcheck="false" />
+    </label>
+
+    {#if emailError}<p class="kerr">{emailError}</p>{/if}
+    {#if emailOk}<p class="ok-note">{emailOk}</p>{/if}
+
+    <div class="crow">
+      <button class="btn btn-primary" disabled={emailBusy} onclick={saveEmail}>
+        {emailBusy ? "Saving" : "Save settings"}
+      </button>
+      <button
+        class="btn"
+        disabled={testing || !email?.configured}
+        onclick={testEmail}
+      >
+        {testing ? "Sending" : "Send test"}
+      </button>
+    </div>
   </section>
 
-  <section class="card pending">
-    <h2>Two-factor authentication <span class="tag">Not built</span></h2>
+  <section class="card">
+    <h2>Two-factor authentication</h2>
     <p class="muted">
-      Six digit codes by email, held in memory with a short expiry. Three wrong
-      codes trigger a one minute lockout, five abandon the attempt and fall back
-      to the seed phrase. Gates seed reveal, key reveal and seed rotation.
+      A six-digit code by email before the seed phrase or the Monero keys can be
+      shown. The code lasts five minutes; three wrong tries lock it for a minute,
+      and five abandon it and fall back to entering your seed phrase.
     </p>
+
+    {#if email?.twoFactor}
+      <p class="ok-note">
+        On. Revealing your seed or keys asks for an emailed code first.
+      </p>
+    {:else}
+      <p class="hint-note">
+        Off. Reveals are protected only by the typed confirmation. Set up and
+        save your email above before turning this on.
+      </p>
+    {/if}
+
+    {#if twoFactorError}<p class="kerr">{twoFactorError}</p>{/if}
+
+    <div class="control">
+      <button
+        class="btn btn-primary"
+        disabled={twoFactorBusy || (!email?.twoFactor && !email?.configured)}
+        onclick={toggleTwoFactor}
+      >
+        {twoFactorBusy
+          ? "Working"
+          : email?.twoFactor
+            ? "Turn off two-factor"
+            : "Turn on two-factor"}
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Seed phrase</h2>
+    <p class="muted">
+      Your twelve words are the wallet. Anyone who reads them owns every coin
+      here and can restore it anywhere, so reveal them only to write down a
+      backup, somewhere private and offline.
+    </p>
+
+    {#if seedPhrase}
+      <div class="keys">
+        <p class="mono kval selectable danger-text">{seedPhrase}</p>
+        <p class="knote">
+          Write these down on paper and store them safely. Never type them into
+          a website or share them with anyone, including anyone claiming to be
+          support.
+        </p>
+        <button class="btn" onclick={hideSeed}>Hide</button>
+      </div>
+    {:else if askingSeed}
+      <div class="confirm-box">
+        <p class="muted">
+          These will appear on screen. Make sure nobody is watching and that this
+          machine is not being recorded. Type <strong>{REVEAL_WORD}</strong> to continue.
+        </p>
+        <input class="mono" bind:value={seedWord} spellcheck="false" />
+        {#if seedError}
+          <p class="kerr">{seedError}</p>
+        {/if}
+        <div class="crow">
+          <button class="btn" onclick={hideSeed}>Cancel</button>
+          <button
+            class="btn btn-primary"
+            disabled={seedWord.trim().toUpperCase() !== REVEAL_WORD}
+            onclick={revealSeed}
+          >
+            Show seed phrase
+          </button>
+        </div>
+      </div>
+    {:else}
+      <div class="control">
+        <button class="btn" onclick={() => (askingSeed = true)}>Show seed phrase</button>
+      </div>
+    {/if}
   </section>
 
   <section class="card pending">
@@ -773,6 +1041,14 @@
   />
 {/if}
 
+{#if twoFactorFor}
+  <TwoFactorPrompt
+    purpose={twoFactorFor.purpose}
+    onpassed={twoFactorPassed}
+    oncancel={() => (twoFactorFor = null)}
+  />
+{/if}
+
 <style>
   .view { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
   .tips { display: flex; flex-direction: column; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
@@ -848,6 +1124,9 @@
   .pfield { display: block; margin-top: 12px; }
   .pfield span { display: block; margin-bottom: 5px; font-size: 12.5px; color: var(--text-muted); }
   .pfield input { width: 100%; }
+  .pair { display: flex; gap: 10px; align-items: flex-end; }
+  .pair .grow { flex: 1; }
+  .stored { font-style: normal; color: var(--text-faint); font-size: 11px; }
   .crow .btn { flex: 1; }
   .kerr { margin: 8px 0 0 !important; color: var(--danger); font-size: 12px; }
   .ok-note { margin: 10px 0 0 !important; color: var(--ok); font-size: 12px; }

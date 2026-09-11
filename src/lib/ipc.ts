@@ -230,6 +230,41 @@ export interface SweepResult {
   error: string | null;
 }
 
+export interface EmailConfig {
+  /** Enough is stored to actually send: server, address, username, password. */
+  configured: boolean;
+  host: string;
+  port: number;
+  username: string;
+  from: string;
+  /** A password is stored. Its value never crosses the bridge. */
+  hasPassword: boolean;
+  /** Two-factor is armed on these settings. */
+  twoFactor: boolean;
+}
+
+export interface TwoFactorState {
+  enabled: boolean;
+  /** A recent code check still authorises a reveal. */
+  passValid: boolean;
+  /** A code is out and waiting to be entered. */
+  pending: boolean;
+}
+
+export interface CodeSent {
+  /** The masked mailbox the code went to, e.g. "a***@gmail.com". */
+  sentTo: string;
+}
+
+export interface VerifyResult {
+  /** ok, wrong, lockedOut, expired, abandoned, or none. */
+  status: "ok" | "wrong" | "lockedOut" | "expired" | "abandoned" | "none";
+  /** Tries left before the lockout or abandonment, when wrong. */
+  remaining: number | null;
+  /** Unix second the lockout lifts, when locked out. */
+  lockedUntil: number | null;
+}
+
 /** Mirrors the `WalletError` enum on the Rust side. */
 export interface IpcError {
   kind: string;
@@ -389,8 +424,44 @@ export const ipc = {
   nextReceiveAddress: (asset: AssetId) =>
     call<ReceiveAddress>("next_receive_address", { asset }),
 
-  /** The Monero spend and view keys. Spending authority: handle carefully. */
+  /** The Monero spend and view keys. Spending authority: handle carefully.
+   *  Gated by two-factor when it is on; rejects with TwoFactorRequired. */
   revealMoneroKeys: () => call<MoneroKeys>("reveal_monero_keys"),
+
+  /** The mail settings, without the password. */
+  emailConfig: () => call<EmailConfig>("email_config"),
+
+  /** Saves the mail settings. A blank password keeps the stored one. */
+  setEmailConfig: (
+    host: string,
+    port: number,
+    username: string,
+    password: string | null,
+    from: string,
+  ) => call<EmailConfig>("set_email_config", { host, port, username, password, from }),
+
+  /** Sends a test message to the configured mailbox. */
+  sendTestEmail: () => call<void>("send_test_email"),
+
+  /** Turns two-factor on or off. Arming it needs a working mailbox. */
+  setTwoFactor: (on: boolean) => call<EmailConfig>("set_two_factor", { on }),
+
+  /** Whether two-factor is on, and whether a pass or a code is live now. */
+  twoFactorState: () => call<TwoFactorState>("two_factor_state"),
+
+  /** Emails a fresh confirmation code. Returns where it was sent. */
+  request2fa: () => call<CodeSent>("request_2fa"),
+
+  /** Checks an entered code, advancing the attempt ladder. */
+  verify2fa: (code: string) => call<VerifyResult>("verify_2fa", { code }),
+
+  /** The seed-phrase fallback when the code cannot be received. */
+  verify2faSeed: (mnemonic: string) =>
+    call<boolean>("verify_2fa_seed", { mnemonic }),
+
+  /** The seed phrase, for backup. Gated by two-factor when on; every reveal
+   *  sends a notice to the mailbox. */
+  revealSeed: () => call<string>("reveal_seed"),
 
   /** Builds and simulates a transfer. Broadcasts nothing. `amountUsd` sets
    *  the creator-fee tier; `outpoints` picks exactly which coins to spend,
