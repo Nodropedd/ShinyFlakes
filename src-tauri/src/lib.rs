@@ -98,6 +98,12 @@ pub fn run() {
             ipc::verify_2fa,
             ipc::verify_2fa_seed,
             ipc::reveal_seed,
+            ipc::swap_config,
+            ipc::set_swap_config,
+            ipc::swap_quote,
+            ipc::swap_create,
+            ipc::swap_fund,
+            ipc::swap_status,
         ])
         .build(tauri::generate_context!())
         .expect("ShinyFlakes failed to start")

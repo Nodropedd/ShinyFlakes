@@ -9,6 +9,7 @@ pub mod history;
 pub mod rpc;
 pub mod slip10;
 pub mod sol_tx;
+pub mod swap;
 pub mod xmr;
 pub mod xmr_rpc;
 pub mod xmr_setup;

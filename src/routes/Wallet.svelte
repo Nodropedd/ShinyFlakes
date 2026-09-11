@@ -1,6 +1,7 @@
 <script lang="ts">
   import Sidebar, { type View } from "../lib/Sidebar.svelte";
   import Portfolio from "./Portfolio.svelte";
+  import Swap from "./Swap.svelte";
   import Buckets from "./Buckets.svelte";
   import Utxo from "./Utxo.svelte";
   import Activity from "./Activity.svelte";
@@ -9,7 +10,7 @@
   import { session } from "../lib/session.svelte";
   import { wallet } from "../lib/wallet.svelte";
 
-  const VIEWS: View[] = ["portfolio", "buckets", "utxo", "activity", "settings"];
+  const VIEWS: View[] = ["portfolio", "swap", "buckets", "utxo", "activity", "settings"];
 
   // The section lives in the URL fragment. Users never see it in a Tauri
   // window, but it gives back and forward navigation for free and makes a
@@ -50,6 +51,8 @@
   <main>
     {#if view === "portfolio"}
       <Portfolio />
+    {:else if view === "swap"}
+      <Swap />
     {:else if view === "buckets"}
       <Buckets />
     {:else if view === "utxo"}

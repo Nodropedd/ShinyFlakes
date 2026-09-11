@@ -1958,3 +1958,281 @@ pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
     notify_reveal(&state.data_dir, "seed phrase").await;
     Ok(mnemonic)
 }
+
+// ------------------------------------------------------------------------
+// Swaps (Trocador, non-custodial)
+//
+// The wallet gets a rate and a deposit address from Trocador, then pays a
+// normal on-chain send to it from the "from" coin. The proceeds arrive at an
+// address this wallet owns. No custody, no account of ours; keys never leave
+// the machine, and the calls ride Tor when it is on. The funding send does NOT
+// carry the creator fee: it would change the exact deposit the exchange waits
+// for. Earning happens through the Trocador markup, set below.
+// ------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapConfigView {
+    /// A key is stored, so swaps can be quoted and created.
+    pub configured: bool,
+    pub has_key: bool,
+    pub markup: f64,
+}
+
+fn swap_config_view(data_dir: &std::path::Path) -> Result<SwapConfigView> {
+    let s = crate::appconfig::load(data_dir)?.swap.unwrap_or_default();
+    Ok(SwapConfigView {
+        configured: !s.api_key.trim().is_empty(),
+        has_key: !s.api_key.is_empty(),
+        markup: s.markup,
+    })
+}
+
+#[tauri::command]
+pub fn swap_config(state: State<AppState>) -> Result<SwapConfigView> {
+    swap_config_view(&state.data_dir)
+}
+
+/// Saves the Trocador key and markup. A blank key keeps the stored one.
+#[tauri::command]
+pub fn set_swap_config(
+    api_key: Option<String>,
+    markup: f64,
+    state: State<AppState>,
+) -> Result<SwapConfigView> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    let existing = cfg.swap.clone().unwrap_or_default();
+    let api_key = match api_key {
+        Some(k) if !k.trim().is_empty() => k.trim().to_string(),
+        _ => existing.api_key,
+    };
+    let markup = if markup.is_finite() && markup >= 0.0 { markup } else { 0.0 };
+    cfg.swap = Some(crate::appconfig::Swap { api_key, markup });
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+    swap_config_view(&state.data_dir)
+}
+
+fn swap_creds(data_dir: &std::path::Path) -> Result<(String, f64)> {
+    let s = crate::appconfig::load(data_dir)?.swap.unwrap_or_default();
+    if s.api_key.trim().is_empty() {
+        return Err(WalletError::Unsupported(
+            "Add your Trocador API key in Settings first. It is free from trocador.app."
+                .into(),
+        ));
+    }
+    Ok((s.api_key, s.markup))
+}
+
+/// This wallet's own address for an asset, for a swap's payout or refund.
+fn own_address(seed: &[u8; 64], asset: &str) -> Result<String> {
+    chains::addresses(seed)?
+        .into_iter()
+        .find(|a| a.asset == asset)
+        .and_then(|a| a.address)
+        .ok_or_else(|| WalletError::Unsupported(format!("no address for {asset}")))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapQuote {
+    pub from: String,
+    pub to: String,
+    pub amount_from_minor: String,
+    /// Expected proceeds. A variable-rate swap can settle a little different.
+    pub amount_to_minor: String,
+    pub provider: String,
+}
+
+/// A rate for a swap. Reaches Trocador; broadcasts nothing.
+#[tauri::command]
+pub async fn swap_quote(
+    from: String,
+    to: String,
+    amount_minor: String,
+    state: State<'_, AppState>,
+) -> Result<SwapQuote> {
+    let (key, markup) = swap_creds(&state.data_dir)?;
+    let dp_from = chains::swap::decimals(&from)
+        .ok_or_else(|| WalletError::Unsupported(format!("{from} cannot be swapped")))?;
+    let dp_to = chains::swap::decimals(&to)
+        .ok_or_else(|| WalletError::Unsupported(format!("{to} cannot be swapped")))?;
+
+    let amount_from = chains::swap::minor_to_decimal(&amount_minor, dp_from)?;
+    let q = chains::swap::quote(&key, markup, &from, &to, &amount_from).await?;
+    let amount_to_minor = chains::swap::decimal_to_minor_floor(&q.amount_to, dp_to).unwrap_or(0);
+
+    Ok(SwapQuote {
+        from,
+        to,
+        amount_from_minor: amount_minor,
+        amount_to_minor: amount_to_minor.to_string(),
+        provider: q.provider,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SwapTrade {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    /// Where the "from" coin must be paid.
+    pub deposit_address: String,
+    /// A tag some chains need. Empty for the ones this wallet sends.
+    pub deposit_memo: String,
+    /// Exactly how much to pay, in the "from" asset's smallest unit.
+    pub deposit_amount_minor: String,
+    /// Where the proceeds will land: an address this wallet owns.
+    pub payout_address: String,
+    pub amount_to_minor: String,
+    pub provider: String,
+    pub status: String,
+}
+
+/// Creates a trade: a deposit address and a locked-in amount. Still broadcasts
+/// nothing; the funding send is a separate, confirmed step.
+#[tauri::command]
+pub async fn swap_create(
+    from: String,
+    to: String,
+    amount_minor: String,
+    state: State<'_, AppState>,
+) -> Result<SwapTrade> {
+    let (key, markup) = swap_creds(&state.data_dir)?;
+    let seed = seed_copy(&state)?;
+
+    let dp_from = chains::swap::decimals(&from)
+        .ok_or_else(|| WalletError::Unsupported(format!("{from} cannot be swapped")))?;
+    let dp_to = chains::swap::decimals(&to)
+        .ok_or_else(|| WalletError::Unsupported(format!("{to} cannot be swapped")))?;
+
+    let amount_from = chains::swap::minor_to_decimal(&amount_minor, dp_from)?;
+    let payout = own_address(&seed, &to)?;
+    let refund = own_address(&seed, &from)?;
+
+    let trade =
+        chains::swap::create(&key, markup, &from, &to, &amount_from, &payout, &refund).await?;
+
+    // The deposit Trocador expects, back in our units. It should match what we
+    // asked for; if the provider echoes a rounded figure, that is what is owed.
+    let deposit_minor = chains::swap::decimal_to_minor(&trade.amount_from, dp_from)
+        .unwrap_or_else(|_| amount_minor.parse::<u128>().unwrap_or(0));
+    let amount_to_minor =
+        chains::swap::decimal_to_minor_floor(&trade.amount_to, dp_to).unwrap_or(0);
+
+    Ok(SwapTrade {
+        id: trade.id,
+        from,
+        to,
+        deposit_address: trade.deposit_address,
+        deposit_memo: trade.deposit_memo,
+        deposit_amount_minor: deposit_minor.to_string(),
+        payout_address: if trade.payout_address.is_empty() {
+            payout
+        } else {
+            trade.payout_address
+        },
+        amount_to_minor: amount_to_minor.to_string(),
+        provider: trade.provider,
+        status: trade.status,
+    })
+}
+
+/// Pays the deposit for a created trade. A normal, locally-signed send with no
+/// creator fee. Irreversible once broadcast, so the UI must confirm first.
+#[tauri::command]
+pub async fn swap_fund(
+    from: String,
+    deposit_address: String,
+    amount_minor: String,
+    memo: Option<String>,
+    endpoint: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    // None of this wallet's from-chains attach a deposit tag to a plain
+    // transfer. If a route needs one, paying it from here would send to the
+    // right address without the tag and the funds could be lost, so refuse.
+    if memo.as_deref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+        return Err(WalletError::Unsupported(
+            "This route needs a deposit memo this wallet cannot attach. Try a \
+             different amount or pair."
+                .into(),
+        ));
+    }
+
+    let seed = seed_copy(&state)?;
+    let to = deposit_address;
+
+    if let Some(chain) = btc_chain(&from) {
+        let amount = parse_minor(&amount_minor)?;
+        let (keyring, utxos, rate) = btc_context(&seed, chain).await?;
+        let change = chains::btc_tx::own_script(&keyring[0].pubkey_hash);
+        let fixed = btc_fixed_outputs(&to, chain, amount, None)?;
+        let plan = chains::btc_tx::select_outputs(&utxos, fixed, change, rate)?;
+        let signed = chains::btc_tx::build_signed(&keyring, &plan.inputs, &plan.outputs, 0)?;
+        let apis = chains::rpc::btc_apis(chain);
+        let broadcast = chains::rpc::esplora_broadcast(apis, &signed).await?;
+        return Ok(if broadcast.len() == 64 {
+            broadcast
+        } else {
+            chains::btc_tx::txid(&signed)
+        });
+    }
+
+    if from == "ETH" {
+        let wei = parse_wei(&amount_minor)?;
+        let (keys, address, balance, max_fee, tip) = eth_context(&seed).await?;
+        let dest = chains::eth::parse_address(&to)?;
+        let gas = max_fee * chains::eth::TRANSFER_GAS as u128;
+        if wei + gas > balance {
+            return Err(WalletError::Funds(format!(
+                "This needs {} wei including gas, but the account holds {balance}.",
+                wei + gas
+            )));
+        }
+        let nonce = chains::rpc::eth_nonce(&address).await?;
+        let tx = chains::eth::Transfer {
+            nonce,
+            max_priority_fee: tip,
+            max_fee,
+            gas_limit: chains::eth::TRANSFER_GAS,
+            to: dest,
+            value: wei,
+            data: Vec::new(),
+        };
+        let signed = chains::eth::sign(&keys, &tx)?;
+        return chains::rpc::eth_broadcast(&signed).await;
+    }
+
+    if from == "SOL" {
+        let amount = parse_minor(&amount_minor)?;
+        check_affordable(&seed, amount).await?;
+        let blockhash = chains::rpc::sol_latest_blockhash().await?;
+        let tx = chains::sol_tx::signed_transfer(&seed, &to, amount, &blockhash)?;
+        chains::rpc::sol_simulate(&tx).await?;
+        return chains::rpc::sol_broadcast(&tx).await;
+    }
+
+    if from == "XMR" {
+        let amount = parse_minor(&amount_minor)?;
+        let endpoint = endpoint.filter(|e| !e.trim().is_empty()).ok_or_else(|| {
+            WalletError::Unsupported("Monero must be running to fund a swap from XMR.".into())
+        })?;
+        let transfer = chains::xmr_rpc::send(&endpoint, &to, amount, None, 0).await?;
+        return Ok(transfer.tx_hash);
+    }
+
+    Err(WalletError::Unsupported(format!(
+        "Swapping from {from} is not supported: this wallet cannot send it yet."
+    )))
+}
+
+/// The current status of a trade, for polling until the proceeds arrive.
+#[tauri::command]
+pub async fn swap_status(id: String, state: State<'_, AppState>) -> Result<String> {
+    let (key, _markup) = swap_creds(&state.data_dir)?;
+    chains::swap::status(&key, &id).await
+}

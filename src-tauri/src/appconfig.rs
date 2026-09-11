@@ -33,9 +33,21 @@ pub struct Smtp {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Swap {
+    /// The Trocador API key. Free to obtain, and the identity commission is
+    /// attributed to. Confidential but far less catastrophic than the seed.
+    pub api_key: String,
+    /// A percentage added on top of the rate, paid to that key's Trocador
+    /// account. Zero means none. This is how the wallet's owner earns on swaps.
+    pub markup: f64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub smtp: Option<Smtp>,
     pub two_factor: bool,
+    pub swap: Option<Swap>,
 }
 
 fn path(app_data: &Path) -> PathBuf {
@@ -114,16 +126,26 @@ mod tests {
                 from: "me@example.com".into(),
             }),
             two_factor: true,
+            swap: Some(Swap {
+                api_key: "trocador-secret".into(),
+                markup: 0.5,
+            }),
         };
         save(&d, &cfg).unwrap();
 
-        // The password must not sit in the file in the clear.
+        // Neither secret may sit in the file in the clear.
         let raw = std::fs::read(path(&d)).unwrap();
         assert!(!raw.windows(10).any(|w| w == b"app-secret"));
+        assert!(!raw
+            .windows("trocador-secret".len())
+            .any(|w| w == b"trocador-secret"));
 
         let back = load(&d).unwrap();
         assert!(back.two_factor);
         assert_eq!(back.smtp.unwrap().host, "smtp.example.com");
+        let swap = back.swap.unwrap();
+        assert_eq!(swap.api_key, "trocador-secret");
+        assert_eq!(swap.markup, 0.5);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

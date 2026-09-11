@@ -141,6 +141,28 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             return true;
           case "reveal_seed":
             return "mock seed phrase not usable as a wallet";
+          case "swap_config":
+          case "set_swap_config":
+            return { configured: true, hasKey: true, markup: 0.5 };
+          case "swap_quote":
+            return {
+              from: args?.from ?? "SOL", to: args?.to ?? "LTC",
+              amountFromMinor: args?.amountMinor ?? "1000000000",
+              amountToMinor: "205000000", provider: "Godex",
+            };
+          case "swap_create":
+            return {
+              id: "TRX" + "0".repeat(9), from: args?.from ?? "SOL", to: args?.to ?? "LTC",
+              depositAddress: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+              depositMemo: "",
+              depositAmountMinor: args?.amountMinor ?? "1000000000",
+              payoutAddress: "ltc1qjmxnz78nmc8nq77wuxh25n2es7rzm5c2rkk4wh",
+              amountToMinor: "205000000", provider: "Godex", status: "waiting",
+            };
+          case "swap_fund":
+            return "e".repeat(64);
+          case "swap_status":
+            return "confirming";
           case "send_limits":
             return {
               asset: "SOL", balanceMinor: "9684292", feeMinor: "5000",

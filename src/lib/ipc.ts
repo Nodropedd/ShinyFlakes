@@ -265,6 +265,40 @@ export interface VerifyResult {
   lockedUntil: number | null;
 }
 
+export interface SwapConfig {
+  /** A Trocador key is stored, so swaps can be quoted and created. */
+  configured: boolean;
+  hasKey: boolean;
+  /** Percent added on top of the rate, paid to the key's account. */
+  markup: number;
+}
+
+export interface SwapQuote {
+  from: AssetId;
+  to: AssetId;
+  amountFromMinor: string;
+  /** Expected proceeds. A variable-rate swap can settle a little different. */
+  amountToMinor: string;
+  provider: string;
+}
+
+export interface SwapTrade {
+  id: string;
+  from: AssetId;
+  to: AssetId;
+  /** Where the "from" coin must be paid. */
+  depositAddress: string;
+  /** A tag some chains need; empty for the ones this wallet sends. */
+  depositMemo: string;
+  /** Exactly how much to pay, in the "from" asset's smallest unit. */
+  depositAmountMinor: string;
+  /** Where the proceeds land: an address this wallet owns. */
+  payoutAddress: string;
+  amountToMinor: string;
+  provider: string;
+  status: string;
+}
+
 /** Mirrors the `WalletError` enum on the Rust side. */
 export interface IpcError {
   kind: string;
@@ -462,6 +496,34 @@ export const ipc = {
   /** The seed phrase, for backup. Gated by two-factor when on; every reveal
    *  sends a notice to the mailbox. */
   revealSeed: () => call<string>("reveal_seed"),
+
+  /** The stored Trocador key state and markup. The key never crosses back. */
+  swapConfig: () => call<SwapConfig>("swap_config"),
+
+  /** Saves the Trocador key and markup. A blank key keeps the stored one. */
+  setSwapConfig: (apiKey: string | null, markup: number) =>
+    call<SwapConfig>("set_swap_config", { apiKey, markup }),
+
+  /** A swap rate. Reaches Trocador; broadcasts nothing. */
+  swapQuote: (from: AssetId, to: AssetId, amountMinor: string) =>
+    call<SwapQuote>("swap_quote", { from, to, amountMinor }),
+
+  /** Creates a trade: a deposit address and a locked-in amount. */
+  swapCreate: (from: AssetId, to: AssetId, amountMinor: string) =>
+    call<SwapTrade>("swap_create", { from, to, amountMinor }),
+
+  /** Pays the deposit for a created trade. Irreversible once broadcast. The
+   *  endpoint is only used when funding from Monero. */
+  swapFund: (
+    from: AssetId,
+    depositAddress: string,
+    amountMinor: string,
+    memo?: string | null,
+    endpoint?: string | null,
+  ) => call<string>("swap_fund", { from, depositAddress, amountMinor, memo, endpoint }),
+
+  /** The current status of a trade, for polling until proceeds arrive. */
+  swapStatus: (id: string) => call<string>("swap_status", { id }),
 
   /** Builds and simulates a transfer. Broadcasts nothing. `amountUsd` sets
    *  the creator-fee tier; `outpoints` picks exactly which coins to spend,

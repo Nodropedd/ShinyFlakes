@@ -1,7 +1,7 @@
 <script lang="ts">
   import Wordmark from "./Wordmark.svelte";
 
-  export type View = "portfolio" | "buckets" | "utxo" | "activity" | "settings";
+  export type View = "portfolio" | "swap" | "buckets" | "utxo" | "activity" | "settings";
 
   let {
     current,
@@ -16,6 +16,8 @@
   const ITEMS: { id: View; label: string; path: string }[] = [
     // Wallet / card outline
     { id: "portfolio", label: "Portfolio", path: "M3 7h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 7l2-3h14l2 3M16 13h2" },
+    // Two arrows, one each way
+    { id: "swap", label: "Swap", path: "M7 4v13M7 4L4 7M7 4l3 3M17 20V7M17 20l-3-3M17 20l3-3" },
     // Stacked containers
     { id: "buckets", label: "Buckets", path: "M4 5h16l-2 5H6zM6 10h12l-1.5 9h-9z" },
     // Fragments

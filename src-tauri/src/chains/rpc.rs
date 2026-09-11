@@ -79,7 +79,7 @@ impl AssetBalance {
 /// When Tor routing is on, requests go through the local Tor proxy, so the
 /// endpoint sees a Tor exit rather than this machine. When it is off, they go
 /// out directly. Tor is checked per call, so the toggle takes effect at once.
-fn client() -> Result<reqwest::Client> {
+pub fn client() -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .timeout(TIMEOUT)
         // Deliberately generic. Announcing the wallet by name in every request

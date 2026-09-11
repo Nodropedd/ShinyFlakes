@@ -20,6 +20,7 @@
     type Donation,
     type Inactivity,
     type EmailConfig,
+    type SwapConfig,
   } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
@@ -199,6 +200,43 @@
       twoFactorError = (e as { message?: string }).message ?? String(e);
     } finally {
       twoFactorBusy = false;
+    }
+  }
+
+  // Swaps through Trocador. The key is the user's own, and doubles as the
+  // identity any markup commission accrues to.
+  let swapCfg = $state<SwapConfig | null>(null);
+  let swapKey = $state("");
+  let swapMarkup = $state(0);
+  let swapBusy = $state(false);
+  let swapError = $state<string | null>(null);
+  let swapOk = $state<string | null>(null);
+
+  $effect(() => {
+    ipc
+      .swapConfig()
+      .then((c) => {
+        swapCfg = c;
+        swapMarkup = c.markup;
+      })
+      .catch(() => {
+        /* the section shows its empty state */
+      });
+  });
+
+  async function saveSwap() {
+    if (swapBusy) return;
+    swapBusy = true;
+    swapError = null;
+    swapOk = null;
+    try {
+      swapCfg = await ipc.setSwapConfig(swapKey.length ? swapKey : null, swapMarkup);
+      swapKey = "";
+      swapOk = "Saved.";
+    } catch (e) {
+      swapError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      swapBusy = false;
     }
   }
 
@@ -823,6 +861,40 @@
           : email?.twoFactor
             ? "Turn off two-factor"
             : "Turn on two-factor"}
+      </button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Swaps</h2>
+    <p class="muted">
+      Swaps go through Trocador, a non-custodial aggregator: no account, no KYC,
+      and your keys never leave this machine. It just quotes a rate and hands
+      back a deposit address; the wallet pays it with an ordinary local-signed
+      send, and the other coin comes back to your own address. Calls ride Tor
+      when it is on.
+    </p>
+    <p class="hint-note">
+      Get a free API key at <code class="mono">trocador.app</code>. An optional
+      markup is added on top of the rate and paid to your account, so you earn a
+      little on each swap. Leave it at zero for none.
+    </p>
+
+    <label class="pfield">
+      <span>Trocador API key {#if swapCfg?.hasKey}<em class="stored">stored — leave blank to keep</em>{/if}</span>
+      <input class="mono" type="password" bind:value={swapKey} spellcheck="false" />
+    </label>
+    <label class="pfield">
+      <span>Your markup (%)</span>
+      <input class="mono" type="number" min="0" step="0.1" bind:value={swapMarkup} />
+    </label>
+
+    {#if swapError}<p class="kerr">{swapError}</p>{/if}
+    {#if swapOk}<p class="ok-note">{swapOk}</p>{/if}
+
+    <div class="control">
+      <button class="btn btn-primary" disabled={swapBusy} onclick={saveSwap}>
+        {swapBusy ? "Saving" : "Save swap settings"}
       </button>
     </div>
   </section>
