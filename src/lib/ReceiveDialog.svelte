@@ -3,6 +3,7 @@
 
   import Address from "./Address.svelte";
   import AssetIcon from "./AssetIcon.svelte";
+  import QrCode from "./QrCode.svelte";
   import { ASSETS, BY_ID, formatAmount } from "./assets";
   import { ipc, type AssetId, type ReceiveAddress } from "./ipc";
   import { settings } from "./settings.svelte";
@@ -109,6 +110,9 @@
       <p class="lede muted">
         Send only {meta?.name} to this address. Anything else sent here is lost.
       </p>
+      <div class="qrwrap">
+        <QrCode value={shownAddress} size={168} />
+      </div>
       <div class="addrbox">
         <span class="mono full selectable">{shownAddress}</span>
       </div>
@@ -188,6 +192,7 @@
   .ticker { font-size: 12px !important; }
 
   .lede { margin: 0 0 12px; font-size: 12.5px; }
+  .qrwrap { display: flex; justify-content: center; margin: 4px 0 14px; }
   .addrbox {
     padding: 13px 14px; border-radius: var(--radius-sm);
     border: 1px solid var(--border); background: var(--bg-raised);

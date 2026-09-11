@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
 
   import AssetIcon from "./AssetIcon.svelte";
+  import QrScanner from "./QrScanner.svelte";
   import { BY_ID, formatAmount, toMinor } from "./assets";
   import {
     ipc,
@@ -57,6 +58,7 @@
   let showCoins = $state(false);
 
   let limits = $state<SendLimits | null>(null);
+  let scanning = $state(false);
   let quote = $state<SendQuote | null>(null);
   let signature = $state<string | null>(null);
   let error = $state<string | null>(null);
@@ -338,7 +340,10 @@
       {/if}
     {:else}
       <label class="field">
-        <span>Recipient address</span>
+        <span class="amount-label">
+          Recipient address
+          <button class="max" type="button" onclick={() => (scanning = true)}>Scan QR</button>
+        </span>
         <input class="mono" bind:value={to} oninput={reset} spellcheck="false" />
         {#if presetNote}
           <span class="hint">{presetNote}</span>
@@ -471,6 +476,17 @@
     {/if}
   </div>
 </div>
+
+{#if scanning}
+  <QrScanner
+    onresult={(text) => {
+      to = text;
+      scanning = false;
+      reset();
+    }}
+    onclose={() => (scanning = false)}
+  />
+{/if}
 
 <style>
   .scrim {
