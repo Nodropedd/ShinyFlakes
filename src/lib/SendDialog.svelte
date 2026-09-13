@@ -7,6 +7,7 @@
   import {
     ipc,
     type AssetId,
+    type NetworkId,
     type SendLimits,
     type SendQuote,
     type Spendable,
@@ -33,12 +34,11 @@
   // Chains whose signing is implemented. The rest appear but cannot be
   // picked, so the gap is visible rather than hidden behind an empty list.
   // Monero only becomes sendable once the local wallet daemon is configured,
-  // because the signing happens there rather than here. (USDC on Solana is
-  // not sendable yet: the SPL token transfer is still to come.)
+  // because the signing happens there rather than here.
   const SENDABLE = $derived<AssetId[]>(
     settings.moneroReady
-      ? ["SOL", "BTC", "LTC", "ETH", "TRON", "USDT", "XMR"]
-      : ["SOL", "BTC", "LTC", "ETH", "TRON", "USDT"],
+      ? ["SOL", "BTC", "LTC", "ETH", "TRON", "USDC", "USDT", "XMR"]
+      : ["SOL", "BTC", "LTC", "ETH", "TRON", "USDC", "USDT"],
   );
 
   // Mounted fresh on each open, so this is a starting point rather than a
@@ -49,6 +49,39 @@
   );
   let to = $state(untrack(() => presetTo ?? ""));
   let amount = $state("");
+
+  // Stablecoins live on several chains; the rest have a single home.
+  const isToken = $derived(chosen === "USDC" || chosen === "USDT");
+  const NETWORKS: { id: NetworkId; name: string; coin: string }[] = [
+    { id: "SOL", name: "Solana", coin: "SOL" },
+    { id: "ETH", name: "Ethereum", coin: "ETH" },
+    { id: "TRON", name: "Tron", coin: "TRX" },
+  ];
+  let network = $state<NetworkId | null>(untrack(() => defaultNetwork(chosen)));
+
+  function defaultNetwork(id: AssetId | null): NetworkId | null {
+    if (id === "USDC") return "SOL";
+    if (id === "USDT") return "TRON";
+    return null;
+  }
+
+  function choose(id: AssetId) {
+    chosen = id;
+    network = defaultNetwork(id);
+    amount = "";
+    reset();
+  }
+
+  function chooseNetwork(n: NetworkId) {
+    if (network === n) return;
+    network = n;
+    amount = "";
+    reset();
+  }
+
+  function netCoin(n: NetworkId | null): string {
+    return NETWORKS.find((x) => x.id === n)?.coin ?? "";
+  }
 
   // Coin control. Only Bitcoin-style chains hold discrete outputs to choose
   // between; account chains have a single balance and nothing to pick.
@@ -163,12 +196,14 @@
 
   $effect(() => {
     const current = chosen;
+    const net = network;
     limits = null;
     if (!current || !SENDABLE.includes(current)) return;
     ipc
-      .sendLimits(current)
+      .sendLimits(current, net)
       .then((l) => {
-        if (chosen === current) limits = l;
+        // Ignore a result that arrived after the asset or network changed.
+        if (chosen === current && network === net) limits = l;
       })
       .catch(() => {
         /* the preview reports the real problem */
@@ -232,6 +267,7 @@
           minor,
           fiatValue,
           pickedCoins.length > 0 ? pickedCoins.map((c) => c.outpoint) : null,
+          isToken ? network : null,
         );
       }
     } catch (e) {
@@ -261,6 +297,7 @@
           quote.amountMinor,
           fiatValue,
           pickedCoins.length > 0 ? pickedCoins.map((c) => c.outpoint) : null,
+          isToken ? network : null,
         );
       }
       onsent();
@@ -288,6 +325,7 @@
           class="back"
           onclick={() => {
             chosen = null;
+            network = null;
             reset();
           }}
           aria-label="Back"
@@ -321,7 +359,7 @@
                 class="row"
                 disabled={!can}
                 title={can ? "" : "Sending this chain is not implemented yet"}
-                onclick={() => (chosen = asset.id)}
+                onclick={() => choose(asset.id)}
               >
                 <AssetIcon {asset} size={32} />
                 <span class="name">
@@ -340,6 +378,29 @@
         </ul>
       {/if}
     {:else}
+      {#if isToken}
+        <div class="field">
+          <span class="amount-label">Network</span>
+          <div class="nets">
+            {#each NETWORKS as n (n.id)}
+              <button
+                type="button"
+                class="net"
+                class:sel={network === n.id}
+                onclick={() => chooseNetwork(n.id)}
+              >
+                {n.name}
+              </button>
+            {/each}
+          </div>
+          <span class="hint">
+            Sent to your {netCoin(network)} address; the network fee is paid in {netCoin(
+              network,
+            )}, not in {meta?.ticker}.
+          </span>
+        </div>
+      {/if}
+
       <label class="field">
         <span class="amount-label">
           Recipient address
@@ -541,6 +602,25 @@
   .max:hover { text-decoration: underline; }
   .hint { display: block; margin: 5px 0 0; font-size: 11.5px; color: var(--text-faint); }
   .field input { width: 100%; }
+
+  .nets { display: flex; gap: 8px; }
+  .net {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .net:hover { color: var(--text); border-color: var(--text-faint); }
+  .net.sel {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
 
   .coins { margin: 4px 0 12px; }
   .disclose {

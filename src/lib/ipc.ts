@@ -20,6 +20,10 @@ export type AssetId =
   | "USDC"
   | "USDT";
 
+/** The chains a stablecoin can live on. Same underlying address as the native
+ *  coin of that chain. */
+export type NetworkId = "SOL" | "ETH" | "TRON";
+
 export interface VaultStatus {
   /** A vault file exists on disk. False means cold start, no wallet yet. */
   initialized: boolean;
@@ -381,8 +385,10 @@ export const ipc = {
   fragmentExecute: (asset: AssetId, amountMinor: string, pieces: number) =>
     call<string>("fragment_execute", { asset, amountMinor, pieces }),
 
-  /** What the account can afford, so the UI can offer a working maximum. */
-  sendLimits: (asset: AssetId) => call<SendLimits>("send_limits", { asset }),
+  /** What the account can afford, so the UI can offer a working maximum. For a
+   *  token, `network` picks which chain's balance to read. */
+  sendLimits: (asset: AssetId, network?: NetworkId | null) =>
+    call<SendLimits>("send_limits", { asset, network }),
 
   /** Runs the inactivity check, clearing the wallet if the period passed.
    *  Needs no keys, so it runs before unlocking. */
@@ -525,16 +531,19 @@ export const ipc = {
     amountMinor: string,
     amountUsd?: number | null,
     outpoints?: string[] | null,
+    network?: NetworkId | null,
   ) =>
-    call<SendQuote>("send_preview", { asset, to, amountMinor, amountUsd, outpoints }),
+    call<SendQuote>("send_preview", { asset, to, amountMinor, amountUsd, outpoints, network }),
 
-  /** Signs and broadcasts. Irreversible. Returns the transaction id. */
+  /** Signs and broadcasts. Irreversible. Returns the transaction id. For a
+   *  token, `network` picks which chain to send it on. */
   sendExecute: (
     asset: AssetId,
     to: string,
     amountMinor: string,
     amountUsd?: number | null,
     outpoints?: string[] | null,
+    network?: NetworkId | null,
   ) =>
-    call<string>("send_execute", { asset, to, amountMinor, amountUsd, outpoints }),
+    call<string>("send_execute", { asset, to, amountMinor, amountUsd, outpoints, network }),
 };

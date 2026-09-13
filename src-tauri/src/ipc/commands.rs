@@ -337,7 +337,11 @@ pub struct SendLimits {
 /// maximum instead of letting someone type their whole balance and be
 /// refused by the network for the fee.
 #[tauri::command]
-pub async fn send_limits(asset: String, state: State<'_, AppState>) -> Result<SendLimits> {
+pub async fn send_limits(
+    asset: String,
+    network: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<SendLimits> {
     let seed = seed_copy(&state)?;
 
     if let Some(chain) = btc_chain(&asset) {
@@ -381,12 +385,11 @@ pub async fn send_limits(asset: String, state: State<'_, AppState>) -> Result<Se
         });
     }
 
-    if asset == "USDT" {
-        let address = chains::tron_tx::address(&seed)?;
-        let balance =
-            chains::rpc::tron_trc20_balance(&address, chains::rpc::usdt_contract()).await?;
-        // A TRC-20 transfer's fee is paid in TRX (energy), not in the token,
-        // so the whole token balance can leave.
+    if chains::tokens::is_token(&asset) {
+        let net = token_network(&asset, &network)?;
+        let balance = token_balance(&seed, &asset, &net).await?;
+        // A token transfer's fee is paid in the host chain's coin (SOL, ETH or
+        // TRX), not in the token, so the whole token balance can leave.
         return Ok(SendLimits {
             asset,
             balance_minor: balance.to_string(),
@@ -521,13 +524,17 @@ async fn tron_send_trx(seed: &[u8; 64], to: &str, amount: u64) -> Result<String>
     tron_sign_and_send(seed, tx, &[expected]).await
 }
 
-/// Builds, verifies, signs and broadcasts a TRC-20 transfer of this wallet's
-/// USDT. The fee is paid in TRX (energy); `FEE_LIMIT` only caps the burn, so
-/// only what the transfer actually uses is charged.
-async fn tron_send_usdt(seed: &[u8; 64], to: &str, amount: u128) -> Result<String> {
+/// Builds, verifies, signs and broadcasts a TRC-20 transfer for a given
+/// contract (USDT or USDC on Tron). The fee is paid in TRX (energy);
+/// `FEE_LIMIT` only caps the burn, so only what the transfer uses is charged.
+async fn tron_send_trc20(
+    seed: &[u8; 64],
+    contract: &str,
+    to: &str,
+    amount: u128,
+) -> Result<String> {
     const FEE_LIMIT: u64 = 100_000_000;
     let owner = chains::tron_tx::address(seed)?;
-    let contract = chains::rpc::usdt_contract();
     let to = to.trim();
     let to_bytes = chains::tron_tx::parse_address(to)?;
     let to20 = chains::tron_tx::body20(&to_bytes);
@@ -543,10 +550,176 @@ async fn tron_send_usdt(seed: &[u8; 64], to: &str, amount: u128) -> Result<Strin
     .await?;
 
     // The raw data must carry both the transfer call (selector + our recipient
-    // and amount) and the USDT contract's own address.
+    // and amount) and the contract's own address.
     let data_hex = format!("a9059cbb{param_hex}");
     let contract_hex = chains::tron_tx::hex(&chains::tron_tx::parse_address(contract)?);
     tron_sign_and_send(seed, tx, &[data_hex, contract_hex]).await
+}
+
+// ---------- SPL and ERC-20 token sends ----------
+
+fn sol_own_address(seed: &[u8; 64]) -> String {
+    bs58::encode(chains::sol_tx::signing_key(seed).verifying_key().to_bytes()).into_string()
+}
+
+fn hexstr(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// An SPL token balance for this wallet, in the token's smallest unit.
+async fn spl_balance(seed: &[u8; 64], mint: &str) -> Result<u128> {
+    chains::rpc::sol_spl_balance(&sol_own_address(seed), mint).await
+}
+
+/// Sends an SPL token (USDC or USDT on Solana).
+///
+/// Before signing, this reads our own token account for the mint from the node
+/// and requires our locally derived associated-token-account to match it. That
+/// both proves the derivation is correct for this run and makes the recipient's
+/// derived account trustworthy — a wrong derivation aborts rather than sending
+/// into an address the recipient could not reach.
+async fn spl_send(seed: &[u8; 64], mint: &str, to: &str, amount: u64) -> Result<String> {
+    let owner = sol_own_address(seed);
+    let owner_key = chains::sol_tx::signing_key(seed).verifying_key().to_bytes();
+    let mint_key = chains::sol_tx::parse_address(mint)?;
+    let derived =
+        bs58::encode(chains::sol_tx::associated_token_account(&owner_key, &mint_key)).into_string();
+
+    let accounts = chains::rpc::sol_token_accounts(&owner, mint).await?;
+    let have: u128 = accounts
+        .iter()
+        .find(|(pk, _)| *pk == derived)
+        .map(|(_, amt)| *amt)
+        .ok_or_else(|| {
+            WalletError::Funds(
+                "This wallet has no verified token account for that coin on Solana, so there \
+                 is nothing to send. If you just received it, wait for the balance to appear."
+                    .into(),
+            )
+        })?;
+    if amount as u128 > have {
+        return Err(WalletError::Funds(format!(
+            "This account holds {have} of that token on Solana, less than {amount}."
+        )));
+    }
+
+    let blockhash = chains::rpc::sol_latest_blockhash().await?;
+    let tx = chains::sol_tx::signed_spl_transfer(
+        seed,
+        to,
+        mint,
+        amount,
+        chains::tokens::TOKEN_DECIMALS as u8,
+        &blockhash,
+    )?;
+    // The node runs it in simulation first, so a bad transfer fails here rather
+    // than on chain.
+    chains::rpc::sol_simulate(&tx).await?;
+    chains::rpc::sol_broadcast(&tx).await
+}
+
+/// An ERC-20 token balance for this wallet, via `balanceOf`.
+async fn erc20_balance(seed: &[u8; 64], contract: &str) -> Result<u128> {
+    let keys = chains::eth::keys(seed)?;
+    let data = format!("0x{}", hexstr(&chains::eth::erc20_balance_data(&keys.address)));
+    chains::rpc::eth_view(contract, &data).await
+}
+
+/// Sends an ERC-20 token (USDC or USDT on Ethereum). Gas is paid in ETH; the
+/// token balance is checked first so gas is not spent on a transfer that would
+/// revert for insufficient funds.
+async fn erc20_send(seed: &[u8; 64], contract: &str, to: &str, amount: u128) -> Result<String> {
+    let (keys, address, _balance, max_fee, tip) = eth_context(seed).await?;
+    let dest = chains::eth::parse_address(to)?;
+    let contract_addr = chains::eth::parse_address(contract)?;
+
+    let held = erc20_balance(seed, contract).await?;
+    if amount > held {
+        return Err(WalletError::Funds(format!(
+            "This account holds {held} of that token, less than {amount}."
+        )));
+    }
+
+    // ERC-20 transfers cost more than a plain send; this ceiling covers USDT's
+    // heavier storage write with room to spare, and only gas actually used is
+    // charged.
+    let gas_limit = 100_000u64;
+    let nonce = chains::rpc::eth_nonce(&address).await?;
+    let tx = chains::eth::Transfer {
+        nonce,
+        max_priority_fee: tip,
+        max_fee,
+        gas_limit,
+        to: contract_addr,
+        value: 0,
+        data: chains::eth::erc20_transfer_data(&dest, amount),
+    };
+    let signed = chains::eth::sign(&keys, &tx)?;
+    chains::rpc::eth_broadcast(&signed).await
+}
+
+/// The network to send a token on: the caller's choice, or a sensible default
+/// (USDC on Solana, USDT on Tron). Errors if the token does not live there.
+fn token_network(asset: &str, network: &Option<String>) -> Result<String> {
+    let chosen = network
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_uppercase);
+    let net = match chosen {
+        Some(n) => n,
+        None => match asset {
+            "USDC" => "SOL".to_string(),
+            _ => "TRON".to_string(),
+        },
+    };
+    if chains::tokens::contract(asset, &net).is_none() {
+        return Err(WalletError::Unsupported(format!(
+            "{asset} cannot be sent on {net}."
+        )));
+    }
+    Ok(net)
+}
+
+/// The token balance this wallet holds for a token on a network.
+async fn token_balance(seed: &[u8; 64], asset: &str, network: &str) -> Result<u128> {
+    let contract = chains::tokens::contract(asset, network)
+        .ok_or_else(|| WalletError::Unsupported(format!("{asset} is not on {network}")))?;
+    match network {
+        "SOL" => spl_balance(seed, contract).await,
+        "ETH" => erc20_balance(seed, contract).await,
+        "TRON" => chains::rpc::tron_trc20_balance(&chains::tron_tx::address(seed)?, contract).await,
+        other => Err(WalletError::Unsupported(format!("unknown network {other}"))),
+    }
+}
+
+/// Sends a token on the given network, routing to that chain's transfer.
+async fn token_send(
+    seed: &[u8; 64],
+    asset: &str,
+    network: &str,
+    to: &str,
+    amount: u128,
+) -> Result<String> {
+    let contract = chains::tokens::contract(asset, network)
+        .ok_or_else(|| WalletError::Unsupported(format!("{asset} is not on {network}")))?;
+    match network {
+        "SOL" => spl_send(seed, contract, to, amount as u64).await,
+        "ETH" => erc20_send(seed, contract, to, amount).await,
+        "TRON" => tron_send_trc20(seed, contract, to, amount).await,
+        other => Err(WalletError::Unsupported(format!("unknown network {other}"))),
+    }
+}
+
+/// Validates a recipient address against the network it will be sent on, so a
+/// typo or a wrong-chain address is caught before anything is built.
+fn validate_recipient(network: &str, to: &str) -> Result<()> {
+    match network {
+        "SOL" => chains::sol_tx::parse_address(to).map(|_| ()),
+        "ETH" => chains::eth::parse_address(to).map(|_| ()),
+        "TRON" => chains::tron_tx::parse_address(to).map(|_| ()),
+        other => Err(WalletError::Unsupported(format!("unknown network {other}"))),
+    }
 }
 
 /// Builds and signs the transfer, then has a node run it in simulation. This
@@ -558,6 +731,7 @@ pub async fn send_preview(
     amount_minor: String,
     amount_usd: Option<f64>,
     outpoints: Option<Vec<String>>,
+    network: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SendQuote> {
     let amount = parse_minor(&amount_minor)?;
@@ -645,18 +819,18 @@ pub async fn send_preview(
         });
     }
 
-    if asset == "USDT" {
-        chains::tron_tx::parse_address(&to)?;
-        let address = chains::tron_tx::address(&seed)?;
-        let balance =
-            chains::rpc::tron_trc20_balance(&address, chains::rpc::usdt_contract()).await?;
-        if amount as u128 > balance {
+    if chains::tokens::is_token(&asset) {
+        let net = token_network(&asset, &network)?;
+        validate_recipient(&net, to.trim())?;
+        let held = token_balance(&seed, &asset, &net).await?;
+        if amount as u128 > held {
             return Err(WalletError::Funds(format!(
-                "This account holds {balance} of USDT, less than {amount}."
+                "This account holds {held} of {asset} on {net}, less than {amount}."
             )));
         }
-        // The fee is paid in TRX (energy); no creator fee is added to a token
-        // send, so the token amount is exactly what leaves.
+        // The fee is paid in the host chain's coin (SOL/ETH/TRX), and no
+        // creator fee is added to a token send, so the token amount is exactly
+        // what leaves.
         return Ok(SendQuote {
             asset,
             to,
@@ -664,7 +838,7 @@ pub async fn send_preview(
             fee_minor: "0".into(),
             creator_fee_minor: "0".into(),
             total_minor: amount.to_string(),
-            simulated: false,
+            simulated: net == "SOL",
         });
     }
 
@@ -745,6 +919,7 @@ pub async fn send_execute(
     amount_minor: String,
     amount_usd: Option<f64>,
     outpoints: Option<Vec<String>>,
+    network: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String> {
     let amount = parse_minor(&amount_minor)?;
@@ -844,10 +1019,11 @@ pub async fn send_execute(
         return Ok(id);
     }
 
-    if asset == "USDT" {
-        // No creator fee on a token send: it would mean a second TRC-20 call
-        // and a second energy charge, out of proportion to the fee itself.
-        return tron_send_usdt(&seed, &to, amount as u128).await;
+    if chains::tokens::is_token(&asset) {
+        let net = token_network(&asset, &network)?;
+        // No creator fee on a token send: it would mean a second transfer and a
+        // second host-chain fee, out of proportion to the fee itself.
+        return token_send(&seed, &asset, &net, &to, amount as u128).await;
     }
 
     if asset != "SOL" {
@@ -2388,9 +2564,20 @@ pub async fn swap_fund(
         return tron_send_trx(&seed, &to, amount).await;
     }
 
+    // Swaps deposit USDC on Solana and USDT on Tron (see chains::swap::pair),
+    // so fund each on the network the trade expects.
+    if from == "USDC" {
+        let amount = parse_minor(&amount_minor)?;
+        let mint = chains::tokens::contract("USDC", "SOL")
+            .ok_or_else(|| WalletError::Unsupported("USDC mint missing".into()))?;
+        return spl_send(&seed, mint, &to, amount).await;
+    }
+
     if from == "USDT" {
         let amount = parse_minor(&amount_minor)?;
-        return tron_send_usdt(&seed, &to, amount as u128).await;
+        let contract = chains::tokens::contract("USDT", "TRON")
+            .ok_or_else(|| WalletError::Unsupported("USDT contract missing".into()))?;
+        return tron_send_trc20(&seed, contract, &to, amount as u128).await;
     }
 
     Err(WalletError::Unsupported(format!(

@@ -474,6 +474,7 @@ struct TokenAccountInner {
 
 #[derive(Deserialize)]
 struct TokenAccount {
+    pubkey: String,
     account: TokenAccountInner,
 }
 
@@ -490,6 +491,45 @@ async fn spl_balance(c: &reqwest::Client, owner: &str, mint: &str) -> Result<i12
     Ok(v.value
         .iter()
         .filter_map(|a| a.account.data.parsed.info.token_amount.amount.parse::<i128>().ok())
+        .sum())
+}
+
+/// The owner's token accounts for a mint, as (account pubkey, amount) pairs.
+/// The pubkey is the on-chain address that actually holds the tokens, read
+/// from the node rather than derived, so it can be trusted as ground truth
+/// and cross-checked against a local derivation.
+pub async fn sol_token_accounts(owner: &str, mint: &str) -> Result<Vec<(String, u128)>> {
+    let c = client()?;
+    let v: SolValue<Vec<TokenAccount>> = sol_rpc(
+        &c,
+        "getTokenAccountsByOwner",
+        serde_json::json!([owner, { "mint": mint }, { "encoding": "jsonParsed" }]),
+    )
+    .await?;
+
+    Ok(v.value
+        .into_iter()
+        .filter_map(|a| {
+            a.account
+                .data
+                .parsed
+                .info
+                .token_amount
+                .amount
+                .parse::<u128>()
+                .ok()
+                .map(|amt| (a.pubkey, amt))
+        })
+        .collect())
+}
+
+/// An SPL token balance in its smallest unit, summed across the owner's
+/// accounts for that mint.
+pub async fn sol_spl_balance(owner: &str, mint: &str) -> Result<u128> {
+    Ok(sol_token_accounts(owner, mint)
+        .await?
+        .into_iter()
+        .map(|(_, amt)| amt)
         .sum())
 }
 

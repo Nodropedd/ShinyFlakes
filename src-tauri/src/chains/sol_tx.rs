@@ -17,7 +17,9 @@
 //! Lengths use Solana's compact-u16: seven bits per byte, high bit set while
 //! more bytes follow.
 
+use curve25519_dalek::edwards::CompressedEdwardsY;
 use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest, Sha256};
 
 use super::slip10;
 use crate::error::{Result, WalletError};
@@ -27,6 +29,18 @@ const SYSTEM_PROGRAM: [u8; 32] = [0u8; 32];
 
 /// Index of Transfer within the System program's instruction enum.
 const TRANSFER_INSTRUCTION: u32 = 2;
+
+/// The SPL Token program and the Associated Token Account program.
+const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+const ATA_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+/// The literal appended when hashing a program-derived address.
+const PDA_MARKER: &[u8] = b"ProgramDerivedAddress";
+/// TransferChecked within the token program's instruction enum. Checked rather
+/// than plain Transfer so the mint and decimals are verified on chain.
+const TRANSFER_CHECKED: u8 = 12;
+/// CreateIdempotent within the ATA program: makes the recipient's token
+/// account if it is missing, and is a no-op if it already exists.
+const CREATE_ATA_IDEMPOTENT: u8 = 1;
 
 /// Solana charges per signature. One signer here, so one unit.
 pub const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
@@ -188,6 +202,145 @@ fn sign_message(key: &SigningKey, message: &[u8]) -> Vec<u8> {
     tx
 }
 
+// ---------- SPL tokens ----------
+
+/// True when 32 bytes are a valid ed25519 point. A program-derived address is
+/// specifically one that is NOT, which is how it proves no private key exists
+/// for it.
+fn on_curve(bytes: &[u8; 32]) -> bool {
+    CompressedEdwardsY(*bytes).decompress().is_some()
+}
+
+/// Solana's `create_program_address`: hash the seeds, the program id and the
+/// marker; the result is a PDA only if it lands off the curve.
+fn create_program_address(seeds: &[&[u8]], program: &[u8; 32]) -> Option<[u8; 32]> {
+    let mut h = Sha256::new();
+    for s in seeds {
+        h.update(s);
+    }
+    h.update(program);
+    h.update(PDA_MARKER);
+    let out: [u8; 32] = h.finalize().into();
+    if on_curve(&out) {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+/// `find_program_address`: the highest bump seed that yields an off-curve
+/// address. Every account program uses this to place its accounts.
+fn find_program_address(seeds: &[&[u8]], program: &[u8; 32]) -> [u8; 32] {
+    for bump in (0u8..=255).rev() {
+        let tail = [bump];
+        let mut all: Vec<&[u8]> = seeds.to_vec();
+        all.push(&tail);
+        if let Some(addr) = create_program_address(&all, program) {
+            return addr;
+        }
+    }
+    // Finding no off-curve bump is cryptographically impossible in practice.
+    [0u8; 32]
+}
+
+/// The associated token account that holds `mint` for `owner`: the deterministic
+/// address every wallet uses, derived from the owner, the token program and the
+/// mint under the ATA program.
+pub fn associated_token_account(owner: &[u8; 32], mint: &[u8; 32]) -> [u8; 32] {
+    let token = parse_address(TOKEN_PROGRAM).expect("token program id is valid");
+    let ata = parse_address(ATA_PROGRAM).expect("ata program id is valid");
+    find_program_address(&[owner, &token, mint], &ata)
+}
+
+/// Builds the message for an SPL transfer. Two instructions: create the
+/// recipient's token account if it is missing (idempotent, so harmless if it
+/// exists), then a checked transfer into it. The signer pays the fee and any
+/// account rent.
+pub fn build_spl_message(
+    owner: &[u8; 32],
+    recipient: &[u8; 32],
+    mint: &[u8; 32],
+    amount: u64,
+    decimals: u8,
+    blockhash: &[u8; 32],
+) -> Vec<u8> {
+    let token = parse_address(TOKEN_PROGRAM).expect("token program id is valid");
+    let ata_prog = parse_address(ATA_PROGRAM).expect("ata program id is valid");
+    let source_ata = associated_token_account(owner, mint);
+    let dest_ata = associated_token_account(recipient, mint);
+
+    // Fixed order: writable signer, writable non-signers, then read-only.
+    let accounts: [[u8; 32]; 8] = [
+        *owner,         // 0  signer, writable (fee payer + token owner)
+        source_ata,     // 1  writable
+        dest_ata,       // 2  writable
+        *recipient,     // 3  read-only (the recipient's wallet)
+        *mint,          // 4  read-only
+        SYSTEM_PROGRAM, // 5  read-only
+        token,          // 6  read-only (token program)
+        ata_prog,       // 7  read-only (ATA program)
+    ];
+
+    let mut msg = Vec::new();
+    // One required signature; five read-only unsigned accounts (indices 3..=7).
+    msg.push(1);
+    msg.push(0);
+    msg.push(5);
+
+    push_compact_u16(&mut msg, accounts.len() as u16);
+    for a in &accounts {
+        msg.extend_from_slice(a);
+    }
+
+    msg.extend_from_slice(blockhash);
+
+    push_compact_u16(&mut msg, 2);
+
+    // 1) Create the recipient's associated token account if needed.
+    msg.push(7); // program: ATA
+    push_compact_u16(&mut msg, 6);
+    for i in [0u8, 2, 3, 4, 5, 6] {
+        msg.push(i);
+    }
+    push_compact_u16(&mut msg, 1);
+    msg.push(CREATE_ATA_IDEMPOTENT);
+
+    // 2) TransferChecked from our account to theirs.
+    msg.push(6); // program: token
+    push_compact_u16(&mut msg, 4);
+    for i in [1u8, 4, 2, 0] {
+        msg.push(i);
+    }
+    let mut data = Vec::with_capacity(10);
+    data.push(TRANSFER_CHECKED);
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.push(decimals);
+    push_compact_u16(&mut msg, data.len() as u16);
+    msg.extend_from_slice(&data);
+
+    msg
+}
+
+/// Builds and signs an SPL token transfer to `to`'s wallet address.
+pub fn signed_spl_transfer(
+    seed: &[u8],
+    to: &str,
+    mint: &str,
+    amount: u64,
+    decimals: u8,
+    blockhash: &[u8; 32],
+) -> Result<Vec<u8>> {
+    let key = signing_key(seed);
+    let owner = key.verifying_key().to_bytes();
+    let recipient = parse_address(to)?;
+    let mint = parse_address(mint)?;
+    if recipient == owner {
+        return Err(bad("recipient", "sending to your own address"));
+    }
+    let message = build_spl_message(&owner, &recipient, &mint, amount, decimals, blockhash);
+    Ok(sign_message(&key, &message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +447,51 @@ mod tests {
         let data = &msg[msg.len() - 12..];
         assert_eq!(&data[0..4], &TRANSFER_INSTRUCTION.to_le_bytes());
         assert_eq!(&data[4..12], &1_000_000u64.to_le_bytes());
+    }
+
+    #[test]
+    fn real_keys_are_on_curve_and_atas_are_not() {
+        // A real public key decompresses to a curve point; a program-derived
+        // account is chosen precisely because it does not. This checks the
+        // curve test both ways, which is the heart of ATA derivation.
+        let owner = signing_key(&test_seed()).verifying_key().to_bytes();
+        assert!(on_curve(&owner), "a real public key is on the curve");
+        let mint = parse_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        assert!(on_curve(&mint), "a mint address is a real key, on the curve");
+        let ata = associated_token_account(&owner, &mint);
+        assert!(!on_curve(&ata), "a derived token account is off the curve");
+    }
+
+    #[test]
+    fn ata_is_deterministic_and_mint_specific() {
+        let owner = signing_key(&test_seed()).verifying_key().to_bytes();
+        let usdc = parse_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let usdt = parse_address("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB").unwrap();
+        assert_eq!(
+            associated_token_account(&owner, &usdc),
+            associated_token_account(&owner, &usdc),
+        );
+        assert_ne!(
+            associated_token_account(&owner, &usdc),
+            associated_token_account(&owner, &usdt),
+        );
+    }
+
+    #[test]
+    fn spl_message_has_eight_accounts_and_two_instructions() {
+        let owner = [1u8; 32];
+        let recipient = [2u8; 32];
+        let mint = [3u8; 32];
+        let blockhash = [4u8; 32];
+        let msg = build_spl_message(&owner, &recipient, &mint, 1_000_000, 6, &blockhash);
+
+        // Header: one signature, no read-only signers, five read-only unsigned.
+        assert_eq!(&msg[0..3], &[1, 0, 5]);
+        assert_eq!(msg[3], 8, "eight accounts");
+        assert_eq!(&msg[4..36], &owner, "the signer comes first");
+        // 3 header + 1 count + 8*32 keys + 32 blockhash = 292: the instruction
+        // count, which must be two (create-if-needed, then transfer).
+        assert_eq!(msg[292], 2, "two instructions");
     }
 
     #[test]

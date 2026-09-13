@@ -10,6 +10,7 @@ pub mod rpc;
 pub mod slip10;
 pub mod sol_tx;
 pub mod swap;
+pub mod tokens;
 pub mod tron_tx;
 pub mod xmr;
 pub mod xmr_rpc;
