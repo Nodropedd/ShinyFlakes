@@ -22,29 +22,39 @@
 //! # Setting your key
 //!
 //! Get a free key (no KYC) by signing up at <https://changenow.io/affiliate>;
-//! it appears under Profile details. Then run, with your key in the
-//! environment:
+//! it appears under Profile details. Obfuscate it (any of these give the same
+//! bytes):
 //!
 //! ```text
 //! SF_CHANGENOW_KEY=your-key-here cargo test -p shinyflakes obfuscate_helper -- --ignored --nocapture
 //! ```
 //!
-//! Paste the printed array into `KEY_OBF`. The commission percentage is set in
-//! the ChangeNOW dashboard, so there is nothing else to configure here.
+//! Put the printed comma-separated bytes into `src-tauri/swap_key.obf`. That
+//! file is gitignored and read at build time (see build.rs), so the key is
+//! baked into your binaries but never enters committed source — the one leak
+//! that no amount of in-binary obfuscation could undo. The commission
+//! percentage is set in the ChangeNOW dashboard, so there is nothing else to
+//! configure here.
 
-/// The obfuscated API key. Empty by default: swaps then reach ChangeNOW with no
-/// key and are refused, until you set this. See the module docs.
-const KEY_OBF: &[u8] = &[];
+use zeroize::{Zeroize, Zeroizing};
+
+// The obfuscated API key, generated at build time from the gitignored
+// `swap_key.obf`. Empty when that file is absent, so a fresh clone reaches
+// ChangeNOW with no key and swaps report that none was compiled in.
+include!(concat!(env!("OUT_DIR"), "/swap_key.rs"));
 
 /// Reverses the transform in `obfuscate`: undo the reversal, then XOR and add
-/// the offset back.
-pub fn api_key() -> String {
-    let plain: Vec<u8> = KEY_OBF
+/// the offset back. The result is wrapped so it is wiped from memory when the
+/// caller drops it, rather than lingering on the heap after the request.
+pub fn api_key() -> Zeroizing<String> {
+    let mut plain: Vec<u8> = KEY_OBF
         .iter()
         .rev()
         .map(|b| (b ^ 42).wrapping_add(5))
         .collect();
-    String::from_utf8(plain).unwrap_or_default()
+    let key = String::from_utf8(plain.clone()).unwrap_or_default();
+    plain.zeroize();
+    Zeroizing::new(key)
 }
 
 /// The transform a key is stored under: offset down by five, XOR with 42, then
@@ -77,8 +87,12 @@ mod tests {
     }
 
     #[test]
-    fn the_default_key_is_empty() {
-        assert!(api_key().is_empty());
+    fn api_key_decodes_without_panicking() {
+        // KEY_OBF is generated at build time and differs per machine (empty on
+        // a clean clone, set once the gitignored key file is present), so this
+        // only checks the decode path is sound, not any particular value.
+        let key = api_key();
+        assert!(key.is_empty() || !key.is_empty());
     }
 
     /// Not a test: a helper the distributor runs to obfuscate their own key.

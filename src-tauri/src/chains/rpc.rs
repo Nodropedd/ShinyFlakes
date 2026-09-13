@@ -26,6 +26,8 @@ const BTC_APIS: [&str; 2] = [
 const LTC_APIS: [&str; 1] = ["https://litecoinspace.org/api/address/"];
 const SOL_RPC: &str = "https://api.mainnet-beta.solana.com";
 const TRON_API: &str = "https://api.trongrid.io/v1/accounts/";
+/// Full-node HTTP API, for building and broadcasting Tron transactions.
+const TRON_HOST: &str = "https://api.trongrid.io";
 const PRICE_API: &str = "https://api.coingecko.com/api/v3/simple/price";
 
 /// SPL mint for USDC on Solana.
@@ -647,6 +649,159 @@ async fn tron_account(c: &reqwest::Client, address: &str) -> Result<Option<TronA
         .await
         .map_err(net)?;
     Ok(body.data.into_iter().next())
+}
+
+/// TRX balance in sun, or zero for an account that has never been funded.
+pub async fn tron_trx_balance(address: &str) -> Result<u64> {
+    let c = client()?;
+    match tron_account(&c, address).await? {
+        Some(a) => Ok(a.balance.max(0) as u64),
+        None => Ok(0),
+    }
+}
+
+/// A TRC-20 token balance in its smallest unit, for one contract.
+pub async fn tron_trc20_balance(address: &str, contract: &str) -> Result<u128> {
+    let c = client()?;
+    match tron_account(&c, address).await? {
+        Some(a) => Ok(a
+            .trc20
+            .iter()
+            .filter_map(|m| m.get(contract))
+            .filter_map(|v| v.parse::<u128>().ok())
+            .sum()),
+        None => Ok(0),
+    }
+}
+
+/// The TRC-20 contract this wallet's USDT lives on.
+pub fn usdt_contract() -> &'static str {
+    USDT_CONTRACT
+}
+
+/// A Tron error body that surfaced as `message` is often hex-encoded ASCII.
+fn tron_message(v: &serde_json::Value) -> String {
+    let code = v.get("code").and_then(|c| c.as_str()).unwrap_or("");
+    let raw = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
+    let decoded = super::tron_tx::unhex(raw)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .filter(|s| s.chars().all(|c| !c.is_control()) && !s.is_empty())
+        .unwrap_or_else(|| raw.to_string());
+    format!("{code} {decoded}").trim().to_string()
+}
+
+/// Asks the node to build an unsigned TRX transfer. The node supplies the
+/// block reference and timestamps; the caller verifies the recipient and
+/// amount against the returned raw data before signing it.
+pub async fn tron_create_transfer(
+    owner: &str,
+    to: &str,
+    amount: u64,
+) -> Result<serde_json::Value> {
+    let c = client()?;
+    let body = serde_json::json!({
+        "owner_address": owner,
+        "to_address": to,
+        "amount": amount,
+        "visible": true,
+    });
+    let v: serde_json::Value = c
+        .post(format!("{TRON_HOST}/wallet/createtransaction"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(net)?
+        .error_for_status()
+        .map_err(net)?
+        .json()
+        .await
+        .map_err(net)?;
+
+    if let Some(err) = v.get("Error").and_then(|e| e.as_str()) {
+        return Err(net(format!("Tron: {err}")));
+    }
+    if v.get("txID").is_none() {
+        return Err(net("Tron did not build the transaction"));
+    }
+    Ok(v)
+}
+
+/// Asks the node to build an unsigned TRC-20 (or other) contract call. Same
+/// trust model as `tron_create_transfer`: the raw data is verified before it
+/// is signed.
+pub async fn tron_trigger(
+    owner: &str,
+    contract: &str,
+    selector: &str,
+    parameter_hex: &str,
+    fee_limit: u64,
+) -> Result<serde_json::Value> {
+    let c = client()?;
+    let body = serde_json::json!({
+        "owner_address": owner,
+        "contract_address": contract,
+        "function_selector": selector,
+        "parameter": parameter_hex,
+        "fee_limit": fee_limit,
+        "call_value": 0,
+        "visible": true,
+    });
+    let v: serde_json::Value = c
+        .post(format!("{TRON_HOST}/wallet/triggersmartcontract"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(net)?
+        .error_for_status()
+        .map_err(net)?
+        .json()
+        .await
+        .map_err(net)?;
+
+    // triggersmartcontract wraps the tx and reports a result block.
+    let ok = v
+        .get("result")
+        .and_then(|r| r.get("result"))
+        .and_then(|r| r.as_bool())
+        .unwrap_or(false);
+    if !ok {
+        let msg = v
+            .get("result")
+            .map(tron_message)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "the contract call could not be built".into());
+        return Err(net(format!("Tron: {msg}")));
+    }
+    v.get("transaction")
+        .cloned()
+        .ok_or_else(|| net("Tron did not build the transaction"))
+}
+
+/// Broadcasts a signed Tron transaction, returning its id on success.
+pub async fn tron_broadcast(signed: &serde_json::Value) -> Result<String> {
+    let c = client()?;
+    let v: serde_json::Value = c
+        .post(format!("{TRON_HOST}/wallet/broadcasttransaction"))
+        .json(signed)
+        .send()
+        .await
+        .map_err(net)?
+        .error_for_status()
+        .map_err(net)?
+        .json()
+        .await
+        .map_err(net)?;
+
+    if v.get("result").and_then(|r| r.as_bool()).unwrap_or(false) {
+        let id = v
+            .get("txid")
+            .and_then(|t| t.as_str())
+            .unwrap_or_default()
+            .to_string();
+        return Ok(id);
+    }
+    Err(net(format!("Tron rejected the transfer: {}", tron_message(&v))))
 }
 
 // ---------- Entry point ----------

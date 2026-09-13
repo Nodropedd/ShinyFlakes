@@ -12,3 +12,9 @@ src-tauri/gen/
 *.seed
 .env
 .env.*
+# The compiled-in swap API key: baked in per build, never in source.
+src-tauri/swap_key.obf
+# Loose key/secret files kept in the repo folder (e.g. the raw ChangeNOW key).
+API.txt
+*.key
+key.txt

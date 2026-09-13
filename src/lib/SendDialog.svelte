@@ -33,11 +33,12 @@
   // Chains whose signing is implemented. The rest appear but cannot be
   // picked, so the gap is visible rather than hidden behind an empty list.
   // Monero only becomes sendable once the local wallet daemon is configured,
-  // because the signing happens there rather than here.
+  // because the signing happens there rather than here. (USDC on Solana is
+  // not sendable yet: the SPL token transfer is still to come.)
   const SENDABLE = $derived<AssetId[]>(
     settings.moneroReady
-      ? ["SOL", "BTC", "LTC", "ETH", "XMR"]
-      : ["SOL", "BTC", "LTC", "ETH"],
+      ? ["SOL", "BTC", "LTC", "ETH", "TRON", "USDT", "XMR"]
+      : ["SOL", "BTC", "LTC", "ETH", "TRON", "USDT"],
   );
 
   // Mounted fresh on each open, so this is a starting point rather than a

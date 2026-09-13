@@ -368,6 +368,34 @@ pub async fn send_limits(asset: String, state: State<'_, AppState>) -> Result<Se
         });
     }
 
+    if asset == "TRON" {
+        let address = chains::tron_tx::address(&seed)?;
+        let balance = chains::rpc::tron_trx_balance(&address).await?;
+        let reserve = chains::tron_tx::FEE_RESERVE_SUN;
+        return Ok(SendLimits {
+            asset,
+            balance_minor: balance.to_string(),
+            fee_minor: reserve.to_string(),
+            max_minor: balance.saturating_sub(reserve).to_string(),
+            rent_minimum_minor: "0".into(),
+        });
+    }
+
+    if asset == "USDT" {
+        let address = chains::tron_tx::address(&seed)?;
+        let balance =
+            chains::rpc::tron_trc20_balance(&address, chains::rpc::usdt_contract()).await?;
+        // A TRC-20 transfer's fee is paid in TRX (energy), not in the token,
+        // so the whole token balance can leave.
+        return Ok(SendLimits {
+            asset,
+            balance_minor: balance.to_string(),
+            fee_minor: "0".into(),
+            max_minor: balance.to_string(),
+            rent_minimum_minor: "0".into(),
+        });
+    }
+
     if asset != "SOL" {
         return Err(WalletError::Unsupported(format!(
             "Sending {asset} is not implemented yet."
@@ -431,6 +459,94 @@ async fn check_affordable(seed: &[u8; 64], amount: u64) -> Result<u64> {
     }
 
     Ok(fee)
+}
+
+// ---------- Tron (TRX and TRC-20) ----------
+
+/// Verifies a node-built Tron transaction really carries our transfer, signs
+/// its id locally, and broadcasts it. `expected` are lowercase-hex fragments
+/// that must all appear in the raw data — the recipient, amount, and any
+/// contract we chose — so a skeleton the node tampered with is caught before
+/// it is ever signed.
+async fn tron_sign_and_send(
+    seed: &[u8; 64],
+    tx: serde_json::Value,
+    expected: &[String],
+) -> Result<String> {
+    let raw_hex = tx
+        .get("raw_data_hex")
+        .and_then(|h| h.as_str())
+        .ok_or_else(|| WalletError::Network("Tron returned no raw data".into()))?
+        .to_lowercase();
+    let txid_hex = tx
+        .get("txID")
+        .and_then(|h| h.as_str())
+        .ok_or_else(|| WalletError::Network("Tron returned no transaction id".into()))?
+        .to_lowercase();
+
+    for want in expected {
+        if !raw_hex.contains(want.as_str()) {
+            return Err(WalletError::Network(
+                "Tron returned a transaction that does not match this transfer.".into(),
+            ));
+        }
+    }
+    let raw = chains::tron_tx::unhex(&raw_hex)?;
+    let id = chains::tron_tx::txid(&raw);
+    if chains::tron_tx::hex(&id) != txid_hex {
+        return Err(WalletError::Network(
+            "Tron's transaction id does not match its raw data.".into(),
+        ));
+    }
+
+    let key = chains::tron_tx::signing_key(seed)?;
+    let sig = chains::tron_tx::sign_txid(&key, &id)?;
+    let mut signed = tx;
+    signed["signature"] = serde_json::json!([chains::tron_tx::hex(&sig)]);
+
+    let broadcast = chains::rpc::tron_broadcast(&signed).await?;
+    Ok(if broadcast.is_empty() { txid_hex } else { broadcast })
+}
+
+/// Builds, verifies, signs and broadcasts a plain TRX transfer.
+async fn tron_send_trx(seed: &[u8; 64], to: &str, amount: u64) -> Result<String> {
+    let owner_bytes = chains::tron_tx::account_bytes(seed)?;
+    let owner = chains::tron_tx::address(seed)?;
+    let to = to.trim();
+    let to_bytes = chains::tron_tx::parse_address(to)?;
+
+    let tx = chains::rpc::tron_create_transfer(&owner, to, amount).await?;
+    let expected =
+        chains::tron_tx::hex(&chains::tron_tx::transfer_value(&owner_bytes, &to_bytes, amount));
+    tron_sign_and_send(seed, tx, &[expected]).await
+}
+
+/// Builds, verifies, signs and broadcasts a TRC-20 transfer of this wallet's
+/// USDT. The fee is paid in TRX (energy); `FEE_LIMIT` only caps the burn, so
+/// only what the transfer actually uses is charged.
+async fn tron_send_usdt(seed: &[u8; 64], to: &str, amount: u128) -> Result<String> {
+    const FEE_LIMIT: u64 = 100_000_000;
+    let owner = chains::tron_tx::address(seed)?;
+    let contract = chains::rpc::usdt_contract();
+    let to = to.trim();
+    let to_bytes = chains::tron_tx::parse_address(to)?;
+    let to20 = chains::tron_tx::body20(&to_bytes);
+
+    let param_hex = chains::tron_tx::hex(&chains::tron_tx::trc20_parameter(&to20, amount));
+    let tx = chains::rpc::tron_trigger(
+        &owner,
+        contract,
+        "transfer(address,uint256)",
+        &param_hex,
+        FEE_LIMIT,
+    )
+    .await?;
+
+    // The raw data must carry both the transfer call (selector + our recipient
+    // and amount) and the USDT contract's own address.
+    let data_hex = format!("a9059cbb{param_hex}");
+    let contract_hex = chains::tron_tx::hex(&chains::tron_tx::parse_address(contract)?);
+    tron_sign_and_send(seed, tx, &[data_hex, contract_hex]).await
 }
 
 /// Builds and signs the transfer, then has a node run it in simulation. This
@@ -500,6 +616,54 @@ pub async fn send_preview(
             fee_minor: gas.to_string(),
             creator_fee_minor: creator_fee.to_string(),
             total_minor: needed.to_string(),
+            simulated: false,
+        });
+    }
+
+    if asset == "TRON" {
+        chains::tron_tx::parse_address(&to)?;
+        let address = chains::tron_tx::address(&seed)?;
+        let balance = chains::rpc::tron_trx_balance(&address).await?;
+        let creator = creator_fee as u64;
+        let reserve = chains::tron_tx::FEE_RESERVE_SUN;
+        // A creator fee rides a second transfer, so it needs its own headroom.
+        let fee_room = reserve as u128 * if creator > 0 { 2 } else { 1 };
+        let needed = amount as u128 + creator as u128 + fee_room;
+        if needed > balance as u128 {
+            return Err(WalletError::Funds(format!(
+                "This needs about {needed} sun including the network fee, but the account holds {balance}."
+            )));
+        }
+        return Ok(SendQuote {
+            asset,
+            to,
+            amount_minor: amount.to_string(),
+            fee_minor: reserve.to_string(),
+            creator_fee_minor: creator.to_string(),
+            total_minor: (amount as u128 + creator as u128).to_string(),
+            simulated: false,
+        });
+    }
+
+    if asset == "USDT" {
+        chains::tron_tx::parse_address(&to)?;
+        let address = chains::tron_tx::address(&seed)?;
+        let balance =
+            chains::rpc::tron_trc20_balance(&address, chains::rpc::usdt_contract()).await?;
+        if amount as u128 > balance {
+            return Err(WalletError::Funds(format!(
+                "This account holds {balance} of USDT, less than {amount}."
+            )));
+        }
+        // The fee is paid in TRX (energy); no creator fee is added to a token
+        // send, so the token amount is exactly what leaves.
+        return Ok(SendQuote {
+            asset,
+            to,
+            amount_minor: amount.to_string(),
+            fee_minor: "0".into(),
+            creator_fee_minor: "0".into(),
+            total_minor: amount.to_string(),
             simulated: false,
         });
     }
@@ -665,6 +829,25 @@ pub async fn send_execute(
             }
         }
         return Ok(id);
+    }
+
+    if asset == "TRON" {
+        let creator = creator_fee as u64;
+        let id = tron_send_trx(&seed, &to, amount).await?;
+        // The creator fee rides a second transfer, as Ethereum's does. The
+        // main send has already gone; a failure here costs only the fee.
+        if creator > 0 {
+            if let Some(fee_to) = donation_for("TRON") {
+                let _ = tron_send_trx(&seed, &fee_to, creator).await;
+            }
+        }
+        return Ok(id);
+    }
+
+    if asset == "USDT" {
+        // No creator fee on a token send: it would mean a second TRC-20 call
+        // and a second energy charge, out of proportion to the fee itself.
+        return tron_send_usdt(&seed, &to, amount as u128).await;
     }
 
     if asset != "SOL" {
@@ -1990,7 +2173,8 @@ pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
 // ------------------------------------------------------------------------
 
 /// The compiled-in ChangeNOW key, or a clear error when no key was built in.
-fn swap_creds() -> Result<String> {
+/// Returned wrapped so it is wiped from memory once the swap call is done.
+fn swap_creds() -> Result<Zeroizing<String>> {
     let key = crate::swapcfg::api_key();
     if key.trim().is_empty() {
         return Err(WalletError::Unsupported(
@@ -2197,6 +2381,16 @@ pub async fn swap_fund(
         })?;
         let transfer = chains::xmr_rpc::send(&endpoint, &to, amount, None, 0).await?;
         return Ok(transfer.tx_hash);
+    }
+
+    if from == "TRON" {
+        let amount = parse_minor(&amount_minor)?;
+        return tron_send_trx(&seed, &to, amount).await;
+    }
+
+    if from == "USDT" {
+        let amount = parse_minor(&amount_minor)?;
+        return tron_send_usdt(&seed, &to, amount as u128).await;
     }
 
     Err(WalletError::Unsupported(format!(
