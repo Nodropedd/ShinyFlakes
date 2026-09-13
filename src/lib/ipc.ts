@@ -495,7 +495,7 @@ export const ipc = {
    *  sends a notice to the mailbox if one is configured. */
   revealSeed: () => call<string>("reveal_seed"),
 
-  /** A swap rate. Reaches Trocador; broadcasts nothing. */
+  /** A swap rate. Reaches ChangeNOW; broadcasts nothing. */
   swapQuote: (from: AssetId, to: AssetId, amountMinor: string) =>
     call<SwapQuote>("swap_quote", { from, to, amountMinor }),
 

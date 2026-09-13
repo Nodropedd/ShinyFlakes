@@ -151,7 +151,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             return {
               from: args?.from ?? "SOL", to: args?.to ?? "LTC",
               amountFromMinor: args?.amountMinor ?? "1000000000",
-              amountToMinor: "205000000", provider: "Godex",
+              amountToMinor: "205000000", provider: "ChangeNOW",
             };
           case "swap_create":
             return {
@@ -160,7 +160,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               depositMemo: "",
               depositAmountMinor: args?.amountMinor ?? "1000000000",
               payoutAddress: "ltc1qjmxnz78nmc8nq77wuxh25n2es7rzm5c2rkk4wh",
-              amountToMinor: "205000000", provider: "Godex", status: "waiting",
+              amountToMinor: "205000000", provider: "ChangeNOW", status: "waiting",
             };
           case "swap_fund":
             return "e".repeat(64);

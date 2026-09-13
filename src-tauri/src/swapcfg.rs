@@ -1,11 +1,12 @@
-//! The distributor's Trocador credentials, compiled into the program.
+//! The distributor's ChangeNOW credentials, compiled into the program.
 //!
-//! Trocador requires an API key (a keyless request is rejected with 401), and
-//! the markup that earns commission is attributed to that key's account. In a
-//! wallet each person runs their own copy, so a key or markup typed by the end
-//! user would earn nothing for anyone. The key therefore belongs to whoever
-//! builds and hands out the program, exactly as the donation addresses do, and
-//! is set here, once, before building.
+//! ChangeNOW requires an API key on every swap call, and the partner
+//! commission that earns money is attributed to that key's account (the rate
+//! is set once in the ChangeNOW partner dashboard, not per request). In a
+//! wallet each person runs their own copy, so a key typed by the end user
+//! would earn nothing for anyone. The key therefore belongs to whoever builds
+//! and hands out the program, exactly as the donation addresses do, and is set
+//! here, once, before building.
 //!
 //! # Obfuscation, and its honest limit
 //!
@@ -20,22 +21,20 @@
 //!
 //! # Setting your key
 //!
-//! Run, with your key in the environment:
+//! Get a free key (no KYC) by signing up at <https://changenow.io/affiliate>;
+//! it appears under Profile details. Then run, with your key in the
+//! environment:
 //!
 //! ```text
-//! SF_TROCADOR_KEY=your-key-here cargo test -p shinyflakes obfuscate_helper -- --ignored --nocapture
+//! SF_CHANGENOW_KEY=your-key-here cargo test -p shinyflakes obfuscate_helper -- --ignored --nocapture
 //! ```
 //!
-//! Paste the printed array into `KEY_OBF`, and set `MARKUP` to the percentage
-//! you want added on top of every rate.
+//! Paste the printed array into `KEY_OBF`. The commission percentage is set in
+//! the ChangeNOW dashboard, so there is nothing else to configure here.
 
-/// The obfuscated API key. Empty by default: swaps then reach Trocador with no
+/// The obfuscated API key. Empty by default: swaps then reach ChangeNOW with no
 /// key and are refused, until you set this. See the module docs.
 const KEY_OBF: &[u8] = &[];
-
-/// The percentage added on top of the rate, paid to the key's account. Zero is
-/// none. This is the distributor's, not the end user's.
-pub const MARKUP: f64 = 0.0;
 
 /// Reverses the transform in `obfuscate`: undo the reversal, then XOR and add
 /// the offset back.
@@ -46,10 +45,6 @@ pub fn api_key() -> String {
         .map(|b| (b ^ 42).wrapping_add(5))
         .collect();
     String::from_utf8(plain).unwrap_or_default()
-}
-
-pub fn markup() -> f64 {
-    MARKUP
 }
 
 /// The transform a key is stored under: offset down by five, XOR with 42, then
@@ -70,7 +65,7 @@ mod tests {
 
     #[test]
     fn obfuscation_round_trips() {
-        for sample in ["", "abc123", "trocador-Test_KEY-9f8e7d6c"] {
+        for sample in ["", "abc123", "changenow-Test_KEY-9f8e7d6c"] {
             // Temporarily stand in for KEY_OBF to prove decode inverts encode.
             let obf = obfuscate(sample);
             let plain: String = String::from_utf8(
@@ -87,13 +82,13 @@ mod tests {
     }
 
     /// Not a test: a helper the distributor runs to obfuscate their own key.
-    /// `SF_TROCADOR_KEY=... cargo test obfuscate_helper -- --ignored --nocapture`
+    /// `SF_CHANGENOW_KEY=... cargo test obfuscate_helper -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn obfuscate_helper() {
-        let key = std::env::var("SF_TROCADOR_KEY").unwrap_or_default();
+        let key = std::env::var("SF_CHANGENOW_KEY").unwrap_or_default();
         if key.is_empty() {
-            println!("set SF_TROCADOR_KEY to your Trocador API key first");
+            println!("set SF_CHANGENOW_KEY to your ChangeNOW API key first");
             return;
         }
         let obf = obfuscate(&key);

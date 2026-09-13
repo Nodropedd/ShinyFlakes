@@ -1,52 +1,53 @@
-//! Cross-chain swaps through Trocador, a non-custodial aggregator.
+//! Cross-chain swaps through ChangeNOW, a non-custodial exchanger.
 //!
-//! No account of ours and no custody. The wallet asks Trocador for a rate and a
-//! deposit address, pays a normal on-chain send to it from the "from" coin, and
-//! the exchange Trocador picks sends the "to" coin straight to an address this
-//! wallet owns. Keys never leave this machine; Trocador is just another remote
+//! No account of ours and no custody. The wallet asks ChangeNOW for a rate and
+//! a deposit ("payin") address, pays a normal on-chain send to it from the
+//! "from" coin, and ChangeNOW sends the "to" coin straight to an address this
+//! wallet owns. Keys never leave this machine; ChangeNOW is just another remote
 //! endpoint, like the balance and price lookups, and it rides the same Tor
 //! routing when that is on.
 //!
-//! Monetisation is Trocador's own referral markup, set by whoever holds the API
-//! key, not an extra output of ours. The creator fee that ordinary sends carry
-//! is deliberately NOT applied to a swap's funding transaction: it would change
-//! the exact deposit amount the exchange is waiting for and break the swap.
+//! Monetisation is ChangeNOW's own partner commission, attributed to whoever
+//! holds the API key and set once in their dashboard, not an extra output of
+//! ours. The creator fee that ordinary sends carry is deliberately NOT applied
+//! to a swap's funding transaction: it would change the exact deposit amount
+//! the exchange is waiting for and break the swap.
 //!
-//! The ticker and network strings below are Trocador's own, matching how the
-//! reference privacy wallets (Cake, Feather) name the same coins. Amounts cross
-//! to Trocador as decimal strings; we convert without floats so a satoshi or a
-//! wei is never lost.
+//! This targets the ChangeNOW v2 API, which names a coin by a ticker plus an
+//! explicit network — needed to pin our USDC to Solana and our USDT to Tron.
+//! Amounts cross as decimal strings; we convert without floats so a satoshi or
+//! a wei is never lost.
 
 use serde_json::Value;
 
 use crate::error::{Result, WalletError};
 
-const HOST: &str = "https://api.trocador.app";
+const HOST: &str = "https://api.changenow.io/v2";
 
 fn net(e: impl std::fmt::Display) -> WalletError {
     WalletError::Network(format!("swap: {e}"))
 }
 
-/// Ticker and network as Trocador names them, per asset. `None` for an asset
-/// Trocador is not asked about. If a pair is ever rejected as unknown, this is
+/// Ticker and network as ChangeNOW names them, per asset. `None` for an asset
+/// ChangeNOW is not asked about. If a pair is ever rejected as unknown, this is
 /// the one table to correct.
 pub fn pair(asset: &str) -> Option<(&'static str, &'static str)> {
     Some(match asset {
-        "BTC" => ("btc", "Mainnet"),
-        "LTC" => ("ltc", "Mainnet"),
-        "XMR" => ("xmr", "Mainnet"),
-        "ETH" => ("eth", "ERC20"),
-        "SOL" => ("sol", "Mainnet"),
-        "TRON" => ("trx", "Mainnet"),
+        "BTC" => ("btc", "btc"),
+        "LTC" => ("ltc", "ltc"),
+        "XMR" => ("xmr", "xmr"),
+        "ETH" => ("eth", "eth"),
+        "SOL" => ("sol", "sol"),
+        "TRON" => ("trx", "trx"),
         // Ours are the Solana USDC and the Tron USDT, so the networks are fixed.
-        "USDC" => ("usdc", "SOL"),
-        "USDT" => ("usdt", "TRC20"),
+        "USDC" => ("usdc", "sol"),
+        "USDT" => ("usdt", "trx"),
         _ => return None,
     })
 }
 
 /// Smallest-unit decimals per asset, for converting to and from the decimal
-/// strings Trocador speaks.
+/// strings ChangeNOW speaks.
 pub fn decimals(asset: &str) -> Option<u32> {
     Some(match asset {
         "BTC" | "LTC" => 8,
@@ -118,7 +119,7 @@ pub fn decimal_to_minor(dec: &str, dp: u32) -> Result<u128> {
 }
 
 /// Like `decimal_to_minor`, but floors extra precision instead of refusing it.
-/// For amounts coming back from Trocador, which the wallet only displays.
+/// For amounts coming back from ChangeNOW, which the wallet only displays.
 pub fn decimal_to_minor_floor(dec: &str, dp: u32) -> Result<u128> {
     let s = dec.trim();
     let (int, frac) = match s.split_once('.') {
@@ -142,7 +143,22 @@ fn str_field(v: &Value, key: &str) -> String {
     }
 }
 
-/// A GET against Trocador, returning the parsed JSON or a readable error.
+/// Turns a non-success ChangeNOW response body into a readable message.
+/// Errors come back as `{"message": "..."}` or `{"error": "..."}`.
+fn api_error(text: &str, status: reqwest::StatusCode) -> WalletError {
+    let msg = serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .or_else(|| v.get("error"))
+                .and_then(|e| e.as_str().map(str::to_string))
+        })
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| format!("ChangeNOW returned {status}"));
+    net(msg)
+}
+
+/// A GET against ChangeNOW, returning the parsed JSON or a readable error.
 async fn get(path: &str, params: &[(&str, String)], api_key: &str) -> Result<Value> {
     let client = crate::chains::rpc::client()?;
     // Built with the query encoder rather than `.query()`, which this reqwest
@@ -151,78 +167,71 @@ async fn get(path: &str, params: &[(&str, String)], api_key: &str) -> Result<Val
         .map_err(net)?;
     let resp = client
         .get(url)
-        .header("API-Key", api_key)
+        .header("x-changenow-api-key", api_key)
         .send()
         .await
         .map_err(net)?;
 
     let status = resp.status();
     let text = resp.text().await.map_err(net)?;
-
     if !status.is_success() {
-        // Bad requests come back as {"error": "..."}; surface that, not a code.
-        let msg = serde_json::from_str::<Value>(&text)
-            .ok()
-            .and_then(|v| v.get("error").and_then(|e| e.as_str().map(str::to_string)))
-            .unwrap_or_else(|| format!("Trocador returned {status}"));
-        return Err(net(msg));
+        return Err(api_error(&text, status));
     }
+    serde_json::from_str(&text).map_err(|e| net(format!("unreadable response: {e}")))
+}
 
+/// A POST against ChangeNOW with a JSON body.
+async fn post(path: &str, body: Value, api_key: &str) -> Result<Value> {
+    let client = crate::chains::rpc::client()?;
+    let resp = client
+        .post(format!("{HOST}{path}"))
+        .header("x-changenow-api-key", api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(net)?;
+
+    let status = resp.status();
+    let text = resp.text().await.map_err(net)?;
+    if !status.is_success() {
+        return Err(api_error(&text, status));
+    }
     serde_json::from_str(&text).map_err(|e| net(format!("unreadable response: {e}")))
 }
 
 /// A rate estimate. `amount_to` is what the "to" side is expected to receive; a
-/// variable-rate swap can settle a little different, which the UI says.
+/// standard-flow swap can settle a little different, which the UI says.
 #[derive(Debug, Clone)]
 pub struct Quote {
     pub amount_to: String,
     pub provider: String,
 }
 
-fn markup_params(markup: f64) -> Vec<(&'static str, String)> {
-    if markup > 0.0 && markup.is_finite() {
-        vec![("markup", format!("{markup}"))]
-    } else {
-        Vec::new()
-    }
-}
-
 /// A rate for sending `amount_from` (a decimal string) of one asset into another.
-pub async fn quote(
-    api_key: &str,
-    markup: f64,
-    from: &str,
-    to: &str,
-    amount_from: &str,
-) -> Result<Quote> {
+pub async fn quote(api_key: &str, from: &str, to: &str, amount_from: &str) -> Result<Quote> {
     let (tf, nf) = pair(from).ok_or_else(|| net(format!("{from} cannot be swapped")))?;
     let (tt, nt) = pair(to).ok_or_else(|| net(format!("{to} cannot be swapped")))?;
 
-    let mut params = vec![
-        ("ticker_from", tf.to_string()),
-        ("network_from", nf.to_string()),
-        ("ticker_to", tt.to_string()),
-        ("network_to", nt.to_string()),
-        ("amount_from", amount_from.to_string()),
-        ("payment", "False".to_string()),
+    let params = vec![
+        ("fromCurrency", tf.to_string()),
+        ("fromNetwork", nf.to_string()),
+        ("toCurrency", tt.to_string()),
+        ("toNetwork", nt.to_string()),
+        ("fromAmount", amount_from.to_string()),
+        ("flow", "standard".to_string()),
+        ("type", "direct".to_string()),
     ];
-    params.extend(markup_params(markup));
 
-    let v = get("/new_rate", &params, api_key).await?;
-    let amount_to = str_field(&v, "amount_to");
-    if amount_to.is_empty() {
+    let v = get("/exchange/estimated-amount", &params, api_key).await?;
+    let amount_to = str_field(&v, "toAmount");
+    if amount_to.is_empty() || amount_to == "0" {
         return Err(net("no rate was returned for this pair and amount"));
     }
-    // The best provider, when the response names one.
-    let provider = v
-        .get("quotes")
-        .and_then(|q| q.as_array())
-        .and_then(|a| a.first())
-        .map(|q| str_field(q, "provider"))
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| str_field(&v, "provider"));
 
-    Ok(Quote { amount_to, provider })
+    Ok(Quote {
+        amount_to,
+        provider: "ChangeNOW".to_string(),
+    })
 }
 
 /// A created trade: where to deposit, how much, and where the proceeds go.
@@ -240,10 +249,8 @@ pub struct Trade {
 
 /// Creates the trade. `payout` is an address this wallet owns on the "to"
 /// chain; `refund` is one it owns on the "from" chain, used if the swap fails.
-#[allow(clippy::too_many_arguments)]
 pub async fn create(
     api_key: &str,
-    markup: f64,
     from: &str,
     to: &str,
     amount_from: &str,
@@ -253,22 +260,28 @@ pub async fn create(
     let (tf, nf) = pair(from).ok_or_else(|| net(format!("{from} cannot be swapped")))?;
     let (tt, nt) = pair(to).ok_or_else(|| net(format!("{to} cannot be swapped")))?;
 
-    let mut params = vec![
-        ("ticker_from", tf.to_string()),
-        ("network_from", nf.to_string()),
-        ("ticker_to", tt.to_string()),
-        ("network_to", nt.to_string()),
-        ("amount_from", amount_from.to_string()),
-        ("address", payout.to_string()),
-        ("refund", refund.to_string()),
-        ("payment", "False".to_string()),
-    ];
-    params.extend(markup_params(markup));
+    let body = serde_json::json!({
+        "fromCurrency": tf,
+        "fromNetwork": nf,
+        "toCurrency": tt,
+        "toNetwork": nt,
+        "fromAmount": amount_from,
+        "toAmount": "",
+        "address": payout,
+        "extraId": "",
+        "refundAddress": refund,
+        "refundExtraId": "",
+        "flow": "standard",
+        "type": "direct",
+        "userId": "",
+        "payload": "",
+        "contactEmail": "",
+    });
 
-    let v = get("/new_trade", &params, api_key).await?;
+    let v = post("/exchange", body, api_key).await?;
 
-    let id = str_field(&v, "trade_id");
-    let deposit_address = str_field(&v, "address_provider");
+    let id = str_field(&v, "id");
+    let deposit_address = str_field(&v, "payinAddress");
     if id.is_empty() || deposit_address.is_empty() {
         return Err(net("the trade could not be created"));
     }
@@ -276,24 +289,23 @@ pub async fn create(
     Ok(Trade {
         id,
         deposit_address,
-        deposit_memo: str_field(&v, "address_provider_memo"),
-        amount_from: str_field(&v, "amount_from"),
-        amount_to: str_field(&v, "amount_to"),
-        payout_address: str_field(&v, "address_user"),
-        provider: str_field(&v, "provider"),
-        status: str_field(&v, "status"),
+        deposit_memo: str_field(&v, "payinExtraId"),
+        amount_from: str_field(&v, "fromAmount"),
+        amount_to: str_field(&v, "toAmount"),
+        payout_address: str_field(&v, "payoutAddress"),
+        provider: "ChangeNOW".to_string(),
+        // A fresh exchange has no on-chain deposit yet; the UI polls status.
+        status: {
+            let s = str_field(&v, "status");
+            if s.is_empty() { "waiting".to_string() } else { s }
+        },
     })
 }
 
-/// The current status of a trade by its id. Trocador returns an array; the
-/// first entry is the trade.
+/// The current status of a trade by its id.
 pub async fn status(api_key: &str, id: &str) -> Result<String> {
-    let v = get("/trade", &[("id", id.to_string())], api_key).await?;
-    let entry = match &v {
-        Value::Array(a) => a.first().cloned().unwrap_or(Value::Null),
-        other => other.clone(),
-    };
-    let s = str_field(&entry, "status");
+    let v = get("/exchange/by-id", &[("id", id.to_string())], api_key).await?;
+    let s = str_field(&v, "status");
     if s.is_empty() {
         Err(net("the trade could not be found"))
     } else {
@@ -358,9 +370,9 @@ mod tests {
 
     #[test]
     fn only_known_assets_map() {
-        assert_eq!(pair("BTC"), Some(("btc", "Mainnet")));
-        assert_eq!(pair("USDT"), Some(("usdt", "TRC20")));
-        assert_eq!(pair("USDC"), Some(("usdc", "SOL")));
+        assert_eq!(pair("BTC"), Some(("btc", "btc")));
+        assert_eq!(pair("USDT"), Some(("usdt", "trx")));
+        assert_eq!(pair("USDC"), Some(("usdc", "sol")));
         assert_eq!(pair("DOGE"), None);
         assert_eq!(decimals("ETH"), Some(18));
         assert_eq!(decimals("DOGE"), None);

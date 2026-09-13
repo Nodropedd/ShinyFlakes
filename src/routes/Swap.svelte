@@ -1,8 +1,8 @@
 <script lang="ts">
-  // Cross-chain swaps through Trocador. The wallet quotes a rate, creates a
+  // Cross-chain swaps through ChangeNOW. The wallet quotes a rate, creates a
   // trade to get a deposit address, then pays a normal local-signed send to it
   // with no creator fee. The proceeds land at an address this wallet owns.
-  // Nothing here custodies funds; Trocador is one more endpoint, Tor-routed
+  // Nothing here custodies funds; ChangeNOW is one more endpoint, Tor-routed
   // like the rest.
   import AssetIcon from "../lib/AssetIcon.svelte";
   import Address from "../lib/Address.svelte";
@@ -200,8 +200,8 @@
       </div>
 
       <p class="hint">
-        Keep the trade id. If anything stalls, it is how Trocador looks the swap
-        up.
+        Keep the trade id. If anything stalls, it is how ChangeNOW looks the
+        swap up.
       </p>
       <button class="btn" onclick={startOver}>New swap</button>
     </section>
@@ -209,9 +209,8 @@
     <section class="card">
       <h2>Confirm swap</h2>
       <p class="muted">
-        Trocador locked in this trade through {trade.provider || "an exchange"}.
-        Confirming sends your {fromMeta.name} now. This is a real, irreversible
-        transfer.
+        {trade.provider || "The exchange"} locked in this trade. Confirming
+        sends your {fromMeta.name} now. This is a real, irreversible transfer.
       </p>
 
       <div class="line">
@@ -256,7 +255,7 @@
     <section class="card">
       <h2>Trade one coin for another</h2>
       <p class="muted">
-        A rate is fetched from Trocador. Your coin is sent on-chain to the
+        A rate is fetched from ChangeNOW. Your coin is sent on-chain to the
         exchange, and the other coin comes straight back to your own address.
       </p>
 

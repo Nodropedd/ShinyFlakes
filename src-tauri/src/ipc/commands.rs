@@ -1974,32 +1974,31 @@ pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
 }
 
 // ------------------------------------------------------------------------
-// Swaps (Trocador, non-custodial)
+// Swaps (ChangeNOW, non-custodial)
 //
-// The wallet gets a rate and a deposit address from Trocador, then pays a
+// The wallet gets a rate and a deposit address from ChangeNOW, then pays a
 // normal on-chain send to it from the "from" coin. The proceeds arrive at an
 // address this wallet owns. No custody, no account of ours; keys never leave
 // the machine, and the calls ride Tor when it is on. The funding send does NOT
 // carry the creator fee: it would change the exact deposit the exchange waits
 // for.
 //
-// The Trocador API key and markup belong to whoever builds and hands out the
-// program, not the end user, so they are compiled in (see swapcfg.rs) rather
-// than configured per install. Trocador rejects a keyless request, so swaps
-// only work once a key has been baked in.
+// The ChangeNOW API key belongs to whoever builds and hands out the program,
+// not the end user, so it is compiled in (see swapcfg.rs) rather than
+// configured per install; the partner commission is attributed to that key and
+// set in ChangeNOW's dashboard. Swaps only work once a key has been baked in.
 // ------------------------------------------------------------------------
 
-/// The compiled-in Trocador key and markup, or a clear error when no key was
-/// built in.
-fn swap_creds() -> Result<(String, f64)> {
+/// The compiled-in ChangeNOW key, or a clear error when no key was built in.
+fn swap_creds() -> Result<String> {
     let key = crate::swapcfg::api_key();
     if key.trim().is_empty() {
         return Err(WalletError::Unsupported(
-            "Swaps are not available in this build: no Trocador key was compiled in."
+            "Swaps are not available in this build: no ChangeNOW key was compiled in."
                 .into(),
         ));
     }
-    Ok((key, crate::swapcfg::markup()))
+    Ok(key)
 }
 
 /// This wallet's own address for an asset, for a swap's payout or refund.
@@ -2022,21 +2021,21 @@ pub struct SwapQuote {
     pub provider: String,
 }
 
-/// A rate for a swap. Reaches Trocador; broadcasts nothing.
+/// A rate for a swap. Reaches ChangeNOW; broadcasts nothing.
 #[tauri::command]
 pub async fn swap_quote(
     from: String,
     to: String,
     amount_minor: String,
 ) -> Result<SwapQuote> {
-    let (key, markup) = swap_creds()?;
+    let key = swap_creds()?;
     let dp_from = chains::swap::decimals(&from)
         .ok_or_else(|| WalletError::Unsupported(format!("{from} cannot be swapped")))?;
     let dp_to = chains::swap::decimals(&to)
         .ok_or_else(|| WalletError::Unsupported(format!("{to} cannot be swapped")))?;
 
     let amount_from = chains::swap::minor_to_decimal(&amount_minor, dp_from)?;
-    let q = chains::swap::quote(&key, markup, &from, &to, &amount_from).await?;
+    let q = chains::swap::quote(&key, &from, &to, &amount_from).await?;
     let amount_to_minor = chains::swap::decimal_to_minor_floor(&q.amount_to, dp_to).unwrap_or(0);
 
     Ok(SwapQuote {
@@ -2076,7 +2075,7 @@ pub async fn swap_create(
     amount_minor: String,
     state: State<'_, AppState>,
 ) -> Result<SwapTrade> {
-    let (key, markup) = swap_creds()?;
+    let key = swap_creds()?;
     let seed = seed_copy(&state)?;
 
     let dp_from = chains::swap::decimals(&from)
@@ -2089,9 +2088,9 @@ pub async fn swap_create(
     let refund = own_address(&seed, &from)?;
 
     let trade =
-        chains::swap::create(&key, markup, &from, &to, &amount_from, &payout, &refund).await?;
+        chains::swap::create(&key, &from, &to, &amount_from, &payout, &refund).await?;
 
-    // The deposit Trocador expects, back in our units. It should match what we
+    // The deposit ChangeNOW expects, back in our units. It should match what we
     // asked for; if the provider echoes a rounded figure, that is what is owed.
     let deposit_minor = chains::swap::decimal_to_minor(&trade.amount_from, dp_from)
         .unwrap_or_else(|_| amount_minor.parse::<u128>().unwrap_or(0));
@@ -2208,6 +2207,6 @@ pub async fn swap_fund(
 /// The current status of a trade, for polling until the proceeds arrive.
 #[tauri::command]
 pub async fn swap_status(id: String) -> Result<String> {
-    let (key, _markup) = swap_creds()?;
+    let key = swap_creds()?;
     chains::swap::status(&key, &id).await
 }
