@@ -45,8 +45,15 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               { asset: "ETH", minor: "0", error: null },
               { asset: "SOL", minor: "2113349556", error: null },
               { asset: "TRON", minor: "0", error: null },
-              { asset: "USDC", minor: "0", error: null },
-              { asset: "USDT", minor: "0", error: null },
+              // Tokens: one entry per network, then a summed total.
+              { asset: "USDC", minor: "4000000", error: null, network: "SOL" },
+              { asset: "USDC", minor: "0", error: null, network: "ETH" },
+              { asset: "USDC", minor: "0", error: null, network: "TRON" },
+              { asset: "USDC", minor: "4000000", error: null, network: null },
+              { asset: "USDT", minor: "0", error: null, network: "SOL" },
+              { asset: "USDT", minor: "0", error: null, network: "ETH" },
+              { asset: "USDT", minor: "12500000", error: null, network: "TRON" },
+              { asset: "USDT", minor: "12500000", error: null, network: null },
             ];
           case "utxo_state":
             return {

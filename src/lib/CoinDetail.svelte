@@ -2,7 +2,7 @@
   import Address from "./Address.svelte";
   import AssetIcon from "./AssetIcon.svelte";
   import { BY_ID, formatAmount } from "./assets";
-  import type { AssetId } from "./ipc";
+  import type { AssetId, NetworkId } from "./ipc";
   import { settings } from "./settings.svelte";
   import { wallet } from "./wallet.svelte";
 
@@ -24,6 +24,19 @@
   const entry = $derived(wallet.addresses[asset]);
   const worth = $derived(wallet.value(asset));
   const move = $derived(quote?.change24h ?? null);
+
+  // Stablecoins live on several chains, each with its own balance and its own
+  // receiving address (the host chain's).
+  const isToken = $derived(asset === "USDC" || asset === "USDT");
+  const NETMETA: { id: NetworkId; name: string }[] = [
+    { id: "SOL", name: "Solana" },
+    { id: "ETH", name: "Ethereum" },
+    { id: "TRON", name: "Tron" },
+  ];
+  const perNetwork = $derived(wallet.networks(asset));
+  function netBalance(n: NetworkId) {
+    return perNetwork.find((b) => b.network === n) ?? null;
+  }
 </script>
 
 <div class="view">
@@ -79,22 +92,52 @@
     <button class="btn" onclick={onsend}>Send</button>
   </div>
 
-  <section>
-    <h2>Receiving address</h2>
-    {#if entry?.address}
-      <div class="addr card">
-        <span class="mono selectable full">{entry.address}</span>
-        <Address value={entry.address} path={entry.path} />
+  {#if isToken}
+    <section>
+      <h2>By network</h2>
+      <div class="nets card">
+        {#each NETMETA as n (n.id)}
+          {@const nb = netBalance(n.id)}
+          {@const addr = wallet.addresses[n.id]?.address ?? null}
+          <div class="netrow">
+            <div class="nethead">
+              <span class="netname">{n.name}</span>
+              <span class="mono netbal">
+                {#if nb?.minor != null}
+                  {formatAmount(nb.minor, meta.decimals)} {meta.ticker}
+                {:else}
+                  &mdash;
+                {/if}
+              </span>
+            </div>
+            {#if addr}
+              <div class="netaddr">
+                <span class="mono selectable full">{addr}</span>
+                <Address value={addr} path={wallet.addresses[n.id]?.path} />
+              </div>
+            {/if}
+          </div>
+        {/each}
       </div>
-      {#if entry.host}
-        <p class="note">
-          {meta.name} is a token on {entry.host}, so it shares that chain's address.
-        </p>
+      <p class="note">
+        Each network has its own balance and its own address — the {meta.ticker} you
+        hold on one chain is separate from the others. Only ever send or receive
+        on the matching network.
+      </p>
+    </section>
+  {:else}
+    <section>
+      <h2>Receiving address</h2>
+      {#if entry?.address}
+        <div class="addr card">
+          <span class="mono selectable full">{entry.address}</span>
+          <Address value={entry.address} path={entry.path} />
+        </div>
+      {:else}
+        <p class="note">{entry?.unsupported ?? "No address derived."}</p>
       {/if}
-    {:else}
-      <p class="note">{entry?.unsupported ?? "No address derived."}</p>
-    {/if}
-  </section>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -132,4 +175,15 @@
   }
   .full { font-size: 12.5px; word-break: break-all; }
   .note { margin: 8px 0 0; font-size: 12px; color: var(--text-faint); max-width: 62ch; }
+
+  .nets { padding: 4px 0; }
+  .netrow { padding: 12px 16px; }
+  .netrow + .netrow { border-top: 1px solid var(--border); }
+  .nethead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .netname { font-size: 13px; font-weight: 600; }
+  .netbal { font-size: 14px; font-variant-numeric: tabular-nums; }
+  .netaddr {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 8px;
+  }
 </style>

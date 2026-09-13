@@ -64,6 +64,9 @@ export interface AssetBalance {
   /** Smallest units as a decimal string, or null if it could not be read. */
   minor: string | null;
   error: string | null;
+  /** For a token, which network this balance is on. Null for a native coin or
+   *  for a token's summed-across-networks total. */
+  network?: NetworkId | null;
 }
 
 export interface SendQuote {

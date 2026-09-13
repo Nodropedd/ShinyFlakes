@@ -30,11 +30,6 @@ const TRON_API: &str = "https://api.trongrid.io/v1/accounts/";
 const TRON_HOST: &str = "https://api.trongrid.io";
 const PRICE_API: &str = "https://api.coingecko.com/api/v3/simple/price";
 
-/// SPL mint for USDC on Solana.
-const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-/// TRC-20 contract for USDT on Tron.
-const USDT_CONTRACT: &str = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
-
 const ALL_ASSETS: [&str; 8] = ["BTC", "LTC", "XMR", "ETH", "SOL", "TRON", "USDC", "USDT"];
 
 /// One asset's balance, or the reason it could not be read. A failure on one
@@ -47,6 +42,9 @@ pub struct AssetBalance {
     /// hold 12-decimal Monero amounts without losing the low digits.
     pub minor: Option<String>,
     pub error: Option<String>,
+    /// For a token, which network this balance is on. `None` for a native coin
+    /// or for a token's summed-across-networks total.
+    pub network: Option<String>,
 }
 
 impl AssetBalance {
@@ -64,6 +62,7 @@ impl AssetBalance {
             asset: asset.into(),
             minor: Some(minor.to_string()),
             error: None,
+            network: None,
         }
     }
 
@@ -72,6 +71,26 @@ impl AssetBalance {
             asset: asset.into(),
             minor: None,
             error: Some(message.to_string()),
+            network: None,
+        }
+    }
+
+    /// A token balance on a specific network.
+    fn ok_net(asset: &str, network: &str, minor: u128) -> Self {
+        Self {
+            asset: asset.into(),
+            minor: Some(minor.to_string()),
+            error: None,
+            network: Some(network.into()),
+        }
+    }
+
+    fn failed_net(asset: &str, network: &str, message: impl std::fmt::Display) -> Self {
+        Self {
+            asset: asset.into(),
+            minor: None,
+            error: Some(message.to_string()),
+            network: Some(network.into()),
         }
     }
 }
@@ -478,22 +497,6 @@ struct TokenAccount {
     account: TokenAccountInner,
 }
 
-/// An owner can hold several token accounts for the same mint, so they are
-/// summed rather than taking the first.
-async fn spl_balance(c: &reqwest::Client, owner: &str, mint: &str) -> Result<i128> {
-    let v: SolValue<Vec<TokenAccount>> = sol_rpc(
-        c,
-        "getTokenAccountsByOwner",
-        serde_json::json!([owner, { "mint": mint }, { "encoding": "jsonParsed" }]),
-    )
-    .await?;
-
-    Ok(v.value
-        .iter()
-        .filter_map(|a| a.account.data.parsed.info.token_amount.amount.parse::<i128>().ok())
-        .sum())
-}
-
 /// The owner's token accounts for a mint, as (account pubkey, amount) pairs.
 /// The pubkey is the on-chain address that actually holds the tokens, read
 /// from the node rather than derived, so it can be trusted as ground truth
@@ -714,11 +717,6 @@ pub async fn tron_trc20_balance(address: &str, contract: &str) -> Result<u128> {
     }
 }
 
-/// The TRC-20 contract this wallet's USDT lives on.
-pub fn usdt_contract() -> &'static str {
-    USDT_CONTRACT
-}
-
 /// A Tron error body that surfaced as `message` is often hex-encoded ASCII.
 fn tron_message(v: &serde_json::Value) -> String {
     let code = v.get("code").and_then(|c| c.as_str()).unwrap_or("");
@@ -844,6 +842,93 @@ pub async fn tron_broadcast(signed: &serde_json::Value) -> Result<String> {
     Err(net(format!("Tron rejected the transfer: {}", tron_message(&v))))
 }
 
+/// An ERC-20 token balance for an address, via `balanceOf`.
+async fn eth_token_balance(address: &str, contract: &str) -> Result<u128> {
+    let owner = super::eth::parse_address(address)?;
+    let data: String = super::eth::erc20_balance_data(&owner)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    eth_view(contract, &format!("0x{data}")).await
+}
+
+/// Every stablecoin balance: one entry per network, plus a summed total per
+/// token (the total carries no network). All six network reads run at once.
+async fn token_balances(
+    sol: Option<&str>,
+    eth: Option<&str>,
+    tron: Option<&str>,
+) -> Vec<AssetBalance> {
+    use super::tokens::contract as con;
+
+    async fn spl_bal(a: Option<&str>, mint: &str) -> Result<u128> {
+        match a {
+            Some(a) => sol_spl_balance(a, mint).await,
+            None => Err(WalletError::Network("no Solana address".into())),
+        }
+    }
+    async fn erc_bal(a: Option<&str>, c: &str) -> Result<u128> {
+        match a {
+            Some(a) => eth_token_balance(a, c).await,
+            None => Err(WalletError::Network("no Ethereum address".into())),
+        }
+    }
+    async fn trc_bal(a: Option<&str>, c: &str) -> Result<u128> {
+        match a {
+            Some(a) => tron_trc20_balance(a, c).await,
+            None => Err(WalletError::Network("no Tron address".into())),
+        }
+    }
+
+    let known = |asset, net| con(asset, net).expect("known token contract");
+    let (uc_s, uc_e, uc_t, ut_s, ut_e, ut_t) = tokio::join!(
+        spl_bal(sol, known("USDC", "SOL")),
+        erc_bal(eth, known("USDC", "ETH")),
+        trc_bal(tron, known("USDC", "TRON")),
+        spl_bal(sol, known("USDT", "SOL")),
+        erc_bal(eth, known("USDT", "ETH")),
+        trc_bal(tron, known("USDT", "TRON")),
+    );
+
+    let mut out = Vec::with_capacity(8);
+    for (asset, cells) in [
+        ("USDC", [("SOL", uc_s), ("ETH", uc_e), ("TRON", uc_t)]),
+        ("USDT", [("SOL", ut_s), ("ETH", ut_e), ("TRON", ut_t)]),
+    ] {
+        let mut total: u128 = 0;
+        let mut any_ok = false;
+        let mut last_err: Option<String> = None;
+        for (net, res) in cells {
+            match res {
+                Ok(v) => {
+                    out.push(AssetBalance::ok_net(asset, net, v));
+                    total += v;
+                    any_ok = true;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    out.push(AssetBalance::failed_net(asset, net, &msg));
+                    last_err = Some(msg);
+                }
+            }
+        }
+        // The summed total, so a wallet holding the same coin on two chains
+        // shows one figure as well as the split. Carries the last error if any
+        // network could not be read, so a partial total is not read as final.
+        out.push(if any_ok {
+            AssetBalance {
+                asset: asset.into(),
+                minor: Some(total.to_string()),
+                error: last_err,
+                network: None,
+            }
+        } else {
+            AssetBalance::failed(asset, last_err.unwrap_or_else(|| "unavailable".into()))
+        });
+    }
+    out
+}
+
 // ---------- Entry point ----------
 
 fn address_of(list: &[AssetAddress], asset: &str) -> Option<String> {
@@ -873,11 +958,10 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     let eth_addr = address_of(addresses, "ETH");
     let sol_addr = address_of(addresses, "SOL");
     let tron_addr = address_of(addresses, "TRON");
-    let usdc_addr = address_of(addresses, "USDC");
 
     let missing = || WalletError::Network("no address".into());
 
-    let (btc, ltc, eth, sol, tron, usdc) = tokio::join!(
+    let (btc, ltc, eth, sol, tron) = tokio::join!(
         async {
             match &btc_addr {
                 Some(a) => esplora_any(&c, &BTC_APIS, a).await,
@@ -908,12 +992,6 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
                 None => Err(missing()),
             }
         },
-        async {
-            match &usdc_addr {
-                Some(a) => twice(|| spl_balance(&c, a, USDC_MINT)).await,
-                None => Err(missing()),
-            }
-        },
     );
 
     let one = |asset: &str, result: Result<i128>| match result {
@@ -939,27 +1017,21 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     match tron {
         // An account that has never been funded does not exist on Tron, which
         // is a real zero rather than an error.
-        Ok(None) => {
-            out.push(AssetBalance::ok("TRON", 0));
-            out.push(AssetBalance::ok("USDT", 0));
-        }
-        Ok(Some(account)) => {
-            out.push(AssetBalance::ok("TRON", account.balance));
-            let usdt: i128 = account
-                .trc20
-                .iter()
-                .filter_map(|m| m.get(USDT_CONTRACT))
-                .filter_map(|v| v.parse::<i128>().ok())
-                .sum();
-            out.push(AssetBalance::ok("USDT", usdt));
-        }
-        Err(e) => {
-            out.push(AssetBalance::failed("TRON", &e));
-            out.push(AssetBalance::failed("USDT", &e));
-        }
+        Ok(None) => out.push(AssetBalance::ok("TRON", 0)),
+        Ok(Some(account)) => out.push(AssetBalance::ok("TRON", account.balance)),
+        Err(e) => out.push(AssetBalance::failed("TRON", &e)),
     }
 
-    out.push(one("USDC", usdc));
+    // Every stablecoin, per network plus a total. These reach the token
+    // contracts on each chain, so they run after the native reads above.
+    out.extend(
+        token_balances(
+            sol_addr.as_deref(),
+            eth_addr.as_deref(),
+            tron_addr.as_deref(),
+        )
+        .await,
+    );
     out
 }
 
@@ -1170,13 +1242,15 @@ mod tests {
 
     #[test]
     fn usdc_mint_is_a_valid_solana_pubkey() {
-        let raw = bs58::decode(USDC_MINT).into_vec().expect("valid base58");
+        let mint = crate::chains::tokens::contract("USDC", "SOL").unwrap();
+        let raw = bs58::decode(mint).into_vec().expect("valid base58");
         assert_eq!(raw.len(), 32, "a Solana mint is a 32 byte public key");
     }
 
     #[test]
     fn usdt_contract_is_a_valid_tron_address() {
-        let raw: Vec<u8> = bs58::decode(USDT_CONTRACT)
+        let contract = crate::chains::tokens::contract("USDT", "TRON").unwrap();
+        let raw: Vec<u8> = bs58::decode(contract)
             .with_check(None)
             .into_vec()
             .expect("valid base58check");

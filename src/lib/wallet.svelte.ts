@@ -11,12 +11,19 @@ import {
   type AssetAddress,
   type AssetBalance,
   type AssetId,
+  type NetworkId,
   type Quote,
 } from "./ipc";
 import type { CurrencyCode } from "./settings.svelte";
 import { settings } from "./settings.svelte";
 
 const CONSENT_KEY = "shinyflakes.network";
+
+/** Balances are keyed by asset, except a token's per-network entries, which
+ *  add the network so they sit alongside the summed total (keyed by asset). */
+function balanceKey(e: { asset: string; network?: NetworkId | null }): string {
+  return e.network ? `${e.asset}:${e.network}` : e.asset;
+}
 
 // Refresh on a jittered interval rather than a fixed beat. A request landing
 // at a public endpoint every exact 60 seconds is itself a fingerprint that
@@ -222,11 +229,12 @@ class Wallet {
       // error is recorded alongside the value rather than instead of it.
       const next: Record<string, AssetBalance> = {};
       for (const entry of b.value) {
-        const previous = this.balances[entry.asset];
+        const key = balanceKey(entry);
+        const previous = this.balances[key];
         if (entry.minor != null || previous?.minor == null) {
-          next[entry.asset] = entry;
+          next[key] = entry;
         } else {
-          next[entry.asset] = { ...previous, error: entry.error };
+          next[key] = { ...previous, error: entry.error };
         }
       }
       this.balances = next;
@@ -277,6 +285,15 @@ class Wallet {
     const meta = ASSETS.find((a) => a.id === asset);
     if (minor == null || quote == null || !meta) return null;
     return this.#whole(minor, meta.decimals) * quote.price;
+  }
+
+  /** A token's per-network balances, in display order. Empty for a native
+   *  coin. The main `balances[asset]` entry holds the summed total. */
+  networks(asset: AssetId): AssetBalance[] {
+    const order: NetworkId[] = ["SOL", "ETH", "TRON"];
+    return order
+      .map((n) => this.balances[`${asset}:${n}`])
+      .filter((b): b is AssetBalance => b != null);
   }
 
   get total() {
