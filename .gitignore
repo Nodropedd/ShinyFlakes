@@ -18,3 +18,43 @@ src-tauri/swap_key.obf
 API.txt
 *.key
 key.txt
+
+# Android signing key for sideloading. Self-signed, local only, and not the
+# identity anything would be published under — but still a signing key.
+*.keystore
+*.jks
+# Generated Android project: recreated by `tauri android init`.
+src-tauri/gen/
+# ...except the few host-side files that are hand-maintained. Git will not
+# look inside an ignored directory, so each level has to be re-admitted
+# before the files themselves can be. Without this, regenerating the project
+# silently drops the start-up check and the app goes back to failing with a
+# black screen and no explanation, and drops the packaging setting that lets
+# the bundled Tor and Monero daemon run at all.
+!src-tauri/gen/
+src-tauri/gen/*
+!src-tauri/gen/android/
+src-tauri/gen/android/*
+!src-tauri/gen/android/app/
+src-tauri/gen/android/app/*
+!src-tauri/gen/android/app/build.gradle.kts
+!src-tauri/gen/android/app/src/
+src-tauri/gen/android/app/src/*
+!src-tauri/gen/android/app/src/main/
+src-tauri/gen/android/app/src/main/*
+!src-tauri/gen/android/app/src/main/AndroidManifest.xml
+!src-tauri/gen/android/app/src/main/java/
+src-tauri/gen/android/app/src/main/java/*
+!src-tauri/gen/android/app/src/main/java/com/
+src-tauri/gen/android/app/src/main/java/com/*
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/
+src-tauri/gen/android/app/src/main/java/com/shinyflakes/*
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/
+src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/*
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/MainActivity.kt
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/StartupActivity.kt
+# Built APKs, and the v4 signature files apksigner writes beside them.
+*.apk
+*.idsig
+# Local video project output, not part of the app.
+brag-output/

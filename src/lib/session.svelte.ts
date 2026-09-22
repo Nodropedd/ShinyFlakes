@@ -48,6 +48,20 @@ class Session {
       }
 
       this.status = await ipc.vaultStatus();
+
+      // Staying signed in, if the owner turned it on. The core decides and
+      // says no for anything in the way — a Lock since the last unlock, a
+      // passphrase — in which case the phrase is asked for as always.
+      if (
+        this.status.initialized &&
+        !this.status.unlocked &&
+        !this.status.keyMissing &&
+        !this.status.needsPassphrase &&
+        (await ipc.autoUnlock())
+      ) {
+        this.status = await ipc.vaultStatus();
+      }
+
       this.screen = !this.status.initialized
         ? "cold-start"
         : this.status.unlocked

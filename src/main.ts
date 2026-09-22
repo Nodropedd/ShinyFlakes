@@ -35,8 +35,12 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             };
           case "set_vault_passphrase":
             return null;
-          case "list_buckets":
-            return [];
+          case "auto_unlock":
+            return false;
+          case "stay_signed_in_state":
+            return { enabled: false, available: true };
+          case "set_stay_signed_in":
+            return { enabled: !!args?.on, available: true };
           case "fetch_balances":
             return [
               { asset: "BTC", minor: "125000", error: null },
@@ -125,15 +129,6 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               spendKey: "0".repeat(64), viewKey: "0".repeat(64),
               restoreHeightHint: "the block height when you first received Monero here",
             };
-          case "email_config":
-          case "set_email_config":
-            return {
-              configured: true, host: "smtp.gmail.com", port: 587,
-              username: "you@gmail.com", from: "you@gmail.com",
-              hasPassword: true,
-            };
-          case "send_test_email":
-            return null;
           case "two_factor_state":
             return { enabled: false, passValid: false };
           case "begin_totp_setup":
@@ -240,3 +235,4 @@ window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => e.preventDefault());
 
 export default mount(App, { target: document.getElementById("app")! });
+

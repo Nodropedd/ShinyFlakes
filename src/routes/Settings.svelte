@@ -20,9 +20,10 @@
     type AssetId,
     type Donation,
     type Inactivity,
-    type EmailConfig,
+    type StepUpView,
     type TwoFactorState,
     type TotpSetup,
+    type StaySignedIn,
   } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
@@ -126,71 +127,65 @@
     twoFactorFor = null;
   });
 
-  // Email and two-factor.
-  let email = $state<EmailConfig | null>(null);
-  let smtpHost = $state("");
-  let smtpPort = $state(587);
-  let smtpUser = $state("");
-  let smtpPass = $state("");
-  let smtpFrom = $state("");
-  let emailBusy = $state(false);
-  let testing = $state(false);
-  let emailError = $state<string | null>(null);
-  let emailOk = $state<string | null>(null);
+  // A settings file that will not decrypt blocks every panel below. It holds
+  // no seed, so it is recoverable — but never automatically: resetting it
+  // would switch two-factor off, which is precisely what an attacker who can
+  // corrupt a file would want.
+  let settingsBroken = $state(false);
+  let resetting = $state(false);
+
+  $effect(() => {
+    void ipc
+      .settingsUnreadable()
+      .then((broken) => (settingsBroken = broken))
+      .catch(() => (settingsBroken = false));
+  });
+
+  async function resetSettings() {
+    if (resetting) return;
+    resetting = true;
+    try {
+      await ipc.resetSettings();
+      settingsBroken = false;
+      await refreshStepUp();
+    } finally {
+      resetting = false;
+    }
+  }
+
   let twoFactorBusy = $state(false);
   let twoFactorError = $state<string | null>(null);
 
+  // When the wallet stops to ask for a second factor.
+  let stepUp = $state<StepUpView | null>(null);
+  let stepUpBusy = $state(false);
+  let stepUpError = $state<string | null>(null);
+
+  async function refreshStepUp() {
+    try {
+      stepUp = await ipc.stepUpSettings();
+    } catch {
+      stepUp = null;
+    }
+  }
+
+  async function saveStepUp(next: Partial<StepUpView>) {
+    if (!stepUp || stepUpBusy) return;
+    stepUpBusy = true;
+    stepUpError = null;
+    const merged = { ...stepUp, ...next };
+    try {
+      stepUp = await ipc.setStepUpSettings(merged.dormantDays, merged.largeSend);
+    } catch (e) {
+      stepUpError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      stepUpBusy = false;
+    }
+  }
+
   $effect(() => {
-    ipc
-      .emailConfig()
-      .then((c) => {
-        email = c;
-        smtpHost = c.host;
-        smtpPort = c.port;
-        smtpUser = c.username;
-        smtpFrom = c.from;
-      })
-      .catch(() => {
-        /* the section shows its empty state */
-      });
+    void refreshStepUp();
   });
-
-  async function saveEmail() {
-    if (emailBusy) return;
-    emailBusy = true;
-    emailError = null;
-    emailOk = null;
-    try {
-      email = await ipc.setEmailConfig(
-        smtpHost,
-        smtpPort,
-        smtpUser,
-        smtpPass.length ? smtpPass : null,
-        smtpFrom,
-      );
-      smtpPass = "";
-      emailOk = "Saved.";
-    } catch (e) {
-      emailError = (e as { message?: string }).message ?? String(e);
-    } finally {
-      emailBusy = false;
-    }
-  }
-
-  async function testEmail() {
-    if (testing) return;
-    testing = true;
-    emailError = null;
-    emailOk = null;
-    try {
-      await ipc.sendTestEmail();
-      emailOk = "Test message sent. Check your inbox.";
-    } catch (e) {
-      emailError = (e as { message?: string }).message ?? String(e);
-    } finally {
-      testing = false;
-    }
-  }
 
   // Two-factor is TOTP: a secret scanned into an authenticator app. No email,
   // no server. The email panel above is only for optional reveal notices.
@@ -310,6 +305,47 @@
     }
   }
 
+  // Staying signed in: opening the app goes straight to the wallet.
+  let staySignedIn = $state<StaySignedIn | null>(null);
+  let stayBusy = $state(false);
+  let stayError = $state<string | null>(null);
+
+  // Read again whenever the passphrase changes, since setting one turns it
+  // off and removing one makes it possible again.
+  $effect(() => {
+    void hasPassphrase;
+    ipc
+      .staySignedInState()
+      .then((s) => (staySignedIn = s))
+      .catch(() => {
+        /* the button reports anything that matters */
+      });
+  });
+
+  async function doSetStaySignedIn(on: boolean) {
+    stayError = null;
+    stayBusy = true;
+    try {
+      staySignedIn = await ipc.setStaySignedIn(on);
+    } catch (e) {
+      if ((e as { kind?: string }).kind === "TwoFactorRequired") throw e;
+      stayError = (e as { message?: string }).message ?? String(e);
+    } finally {
+      stayBusy = false;
+    }
+  }
+
+  // Turning it on leaves the wallet open to whoever starts the app next, so it
+  // goes through two-factor like revealing the seed. Turning it off does not.
+  async function setStaySignedIn(on: boolean) {
+    if (stayBusy) return;
+    if (on) {
+      await guarded("keep this device signed in", () => doSetStaySignedIn(true));
+    } else {
+      await doSetStaySignedIn(false);
+    }
+  }
+
   // Clearing this machine after a long absence.
   const PERIODS: { months: number; label: string }[] = [
     { months: 0, label: "Never" },
@@ -383,6 +419,19 @@
       .then((list) => (donations = list))
       .catch(() => {
         /* the section simply stays empty */
+      });
+  });
+
+  // Whether Tor is already on this device. On Android it always is — it
+  // ships inside the app — so there is no download to warn about.
+  let torInstalled = $state(false);
+
+  $effect(() => {
+    ipc
+      .torState()
+      .then((s) => (torInstalled = s.installed))
+      .catch(() => {
+        /* only decides whether the download note shows */
       });
   });
 
@@ -534,7 +583,7 @@
   <section class="card">
     <h2>Vault passphrase</h2>
     <p class="muted">
-      Without one, the vault decrypts using a key in the Windows credential
+      Without one, the vault decrypts using a key in this machine's credential
       store, so anyone with this OS account can read your seed. A passphrase
       mixes into that key, so decrypting then needs both this account and
       something only you know.
@@ -581,6 +630,48 @@
   </section>
 
   <section class="card">
+    <h2>Stay signed in</h2>
+    <p class="muted">
+      Opening ShinyFlakes goes straight to the wallet instead of asking for the
+      seed phrase. Closing the app, or the phone clearing it from memory, no
+      longer signs you out.
+    </p>
+    <p class="warn-note">
+      Anyone who can open the app on this device can then see your balances and
+      send your funds, so the device's own screen lock becomes the thing
+      protecting them. Lock still locks: after pressing it, the next start asks
+      for the phrase again. With two-factor on, a wallet left unopened past its
+      limit still asks for a code.
+    </p>
+
+    {#if staySignedIn && !staySignedIn.available}
+      <p class="hint-note">
+        Not available with a vault passphrase, which has to be typed on every
+        open. Remove the passphrase above to use it.
+      </p>
+    {:else if staySignedIn?.enabled}
+      <p class="ok-note">
+        This device stays signed in.
+        <button class="inline" disabled={stayBusy} onclick={() => setStaySignedIn(false)}>
+          Turn off
+        </button>
+      </p>
+    {:else}
+      <div class="control">
+        <button
+          class="btn"
+          disabled={stayBusy || !staySignedIn}
+          onclick={() => setStaySignedIn(true)}
+        >
+          Stay signed in on this device
+        </button>
+      </div>
+    {/if}
+
+    {#if stayError}<p class="kerr">{stayError}</p>{/if}
+  </section>
+
+  <section class="card">
     <h2>Route through Tor</h2>
     <p class="muted">
       Every balance, price and history lookup goes to a public server that
@@ -591,7 +682,9 @@
     </p>
 
     {#if wallet.torStarting}
-      <p class="hint-note">Connecting to Tor. The first time also downloads it.</p>
+      <p class="hint-note">
+        Connecting to Tor.{torInstalled ? "" : " The first time also downloads it."}
+      </p>
     {:else if wallet.torRouting}
       <p class="ok-note">
         Routing through Tor. Lookups no longer reveal your address.
@@ -603,10 +696,12 @@
           Route through Tor
         </button>
       </div>
-      <p class="hint-note">
-        First time only: about 20 MB from torproject.org, checked against a hash
-        built into this program. Connecting then takes a moment.
-      </p>
+      {#if !torInstalled}
+        <p class="hint-note">
+          First time only: about 20 MB from torproject.org, checked against a hash
+          built into this program. Connecting then takes a moment.
+        </p>
+      {/if}
     {/if}
 
     {#if wallet.torError}
@@ -798,58 +893,76 @@
     {/if}
   </section>
 
+  {#if settingsBroken}
+    <section class="card danger-card">
+      <h2>Saved settings unreadable</h2>
+      <p class="muted">
+        Your wallet and your coins are not affected. This file holds only
+        your preferences and the two-factor secret — not your seed.
+        It cannot be opened with the key on this machine, so the panels below
+        will not work until it is reset.
+      </p>
+      <p class="hint-note">
+        Resetting keeps the old file alongside, as
+        <code class="mono">config.dat.unreadable</code>. Two-factor goes back
+        to off and the authenticator has to be paired again.
+      </p>
+      <div class="crow">
+        <button class="btn btn-primary" disabled={resetting} onclick={resetSettings}>
+          {resetting ? "Resetting" : "Reset settings"}
+        </button>
+      </div>
+    </section>
+  {/if}
+
   <section class="card">
-    <h2>Email notifications <span class="tag">Optional</span></h2>
-    <p class="muted">
-      Optional, and separate from two-factor. If you set up your own mail
-      provider here, the wallet sends a note to this address whenever the seed
-      phrase or a key is revealed — an out-of-band heads-up if your machine is
-      ever in the wrong hands. Over TLS, with the app password stored encrypted
-      on this machine and sent nowhere but your server. Leave it blank to skip.
-    </p>
-    <p class="hint-note">
-      Use an app-specific password, not your main one. For Gmail the server is
-      <code class="mono">smtp.gmail.com</code> on port 587.
-    </p>
+    <h2>When to ask again</h2>
 
-    <label class="pfield">
-      <span>SMTP server</span>
-      <input class="mono" bind:value={smtpHost} spellcheck="false" placeholder="smtp.gmail.com" />
-    </label>
-    <div class="pair">
+    {#if stepUp}
+      {#if !stepUp.totpAvailable}
+        <p class="warn-note">
+          Two-factor is off, so nothing is being asked for. Turn it on below.
+        </p>
+      {/if}
+
+      <p class="muted">
+        Always asked before showing the seed phrase or a private key.
+      </p>
+
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={stepUp.largeSend}
+          disabled={stepUpBusy}
+          onchange={(e) =>
+            saveStepUp({ largeSend: e.currentTarget.checked })}
+        />
+        <span>
+          Ask before sending more than ${stepUp.largeSendUsd.toFixed(0)} that is
+          also at least {Math.round(stepUp.largeSendShare * 100)}% of everything
+          here. Both have to be true, so routine payments stay quiet.
+        </span>
+      </label>
+
       <label class="pfield">
-        <span>Port</span>
-        <input class="mono" type="number" bind:value={smtpPort} />
+        <span>
+          Ask on the first unlock after this many days unopened
+          {#if stepUp.dormantDays === 0}<em class="stored">off</em>{/if}
+        </span>
+        <input
+          class="mono"
+          type="number"
+          min="0"
+          max="365"
+          value={stepUp.dormantDays}
+          disabled={stepUpBusy}
+          onchange={(e) =>
+            saveStepUp({ dormantDays: Number(e.currentTarget.value) || 0 })}
+        />
       </label>
-      <label class="pfield grow">
-        <span>Username</span>
-        <input class="mono" bind:value={smtpUser} spellcheck="false" placeholder="you@gmail.com" />
-      </label>
-    </div>
-    <label class="pfield">
-      <span>Your email address</span>
-      <input class="mono" bind:value={smtpFrom} spellcheck="false" placeholder="you@gmail.com" />
-    </label>
-    <label class="pfield">
-      <span>App password {#if email?.hasPassword}<em class="stored">stored — leave blank to keep</em>{/if}</span>
-      <input class="mono" type="password" bind:value={smtpPass} spellcheck="false" />
-    </label>
 
-    {#if emailError}<p class="kerr">{emailError}</p>{/if}
-    {#if emailOk}<p class="ok-note">{emailOk}</p>{/if}
-
-    <div class="crow">
-      <button class="btn btn-primary" disabled={emailBusy} onclick={saveEmail}>
-        {emailBusy ? "Saving" : "Save settings"}
-      </button>
-      <button
-        class="btn"
-        disabled={testing || !email?.configured}
-        onclick={testEmail}
-      >
-        {testing ? "Sending" : "Send test"}
-      </button>
-    </div>
+      {#if stepUpError}<p class="kerr">{stepUpError}</p>{/if}
+    {/if}
   </section>
 
   <section class="card">
@@ -962,14 +1075,6 @@
         <button class="btn" onclick={() => (askingSeed = true)}>Show seed phrase</button>
       </div>
     {/if}
-  </section>
-
-  <section class="card pending">
-    <h2>Bucket rules <span class="tag">Not built</span></h2>
-    <p class="muted">
-      How incoming funds are split across buckets by default, and which bucket
-      a shortfall is pulled from first.
-    </p>
   </section>
 
   <section class="card">
@@ -1165,13 +1270,6 @@
   }
   section p { margin: 0; font-size: 13px; }
   .pending { opacity: 0.72; }
-  .tag {
-    padding: 2px 7px; border-radius: 999px;
-    border: 1px solid var(--border-strong);
-    color: var(--text-faint);
-    font-size: 10.5px; font-weight: 600;
-    letter-spacing: 0.03em; text-transform: uppercase;
-  }
 
   .themes { display: flex; gap: 8px; margin-top: 14px; }
   .theme {
@@ -1212,11 +1310,13 @@
   .confirm-box p { margin: 0 0 10px; font-size: 12.5px; }
   .confirm-box input { width: 100%; }
   .crow { display: flex; gap: 8px; margin-top: 11px; }
+  .danger-card { border-color: var(--danger); }
+  .toggle { display: flex; gap: 10px; align-items: flex-start; margin-top: 13px; }
+  .toggle input { margin-top: 2px; flex: none; }
+  .toggle span { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
   .pfield { display: block; margin-top: 12px; }
   .pfield span { display: block; margin-bottom: 5px; font-size: 12.5px; color: var(--text-muted); }
   .pfield input { width: 100%; }
-  .pair { display: flex; gap: 10px; align-items: flex-end; }
-  .pair .grow { flex: 1; }
   .stored { font-style: normal; color: var(--text-faint); font-size: 11px; }
   .qrwrap {
     display: flex; justify-content: center; margin: 14px 0;

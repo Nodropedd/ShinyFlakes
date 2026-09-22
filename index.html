@@ -2,11 +2,135 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is what makes env(safe-area-inset-*) report real
+         numbers. Without it Android hands back zero and the bottom bar draws
+         underneath the gesture pill, which then cuts through its labels.
+         user-scalable=no because pinch-zooming a wallet only ever happens by
+         accident mid-transaction. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
+    />
     <title>ShinyFlakes</title>
   </head>
   <body>
     <div id="app"></div>
+    <script>
+      // Android's WebView is updated through the Play Store, so a phone that
+      // is old, lacks Play Services, or runs a vendor ROM can sit years behind
+      // Chrome. Svelte 5's own runtime calls String.prototype.replaceAll on
+      // every render, and that arrived in Chrome 85, so on an older WebView
+      // the very first component would throw and nothing would mount.
+      //
+      // Lowering the build target does not help: esbuild rewrites syntax, not
+      // missing built-ins. This is the smallest thing that does.
+      //
+      // This is not what made the APK come up black — that was the 16 KB page
+      // alignment handled in src-tauri/build.rs, which killed the app before
+      // any of this ran. This only guards genuinely old WebViews.
+      if (!String.prototype.replaceAll) {
+        Object.defineProperty(String.prototype, "replaceAll", {
+          configurable: true,
+          writable: true,
+          value: function (pattern, replacement) {
+            if (pattern instanceof RegExp) {
+              if (!pattern.global) {
+                throw new TypeError(
+                  "replaceAll must be called with a global RegExp"
+                );
+              }
+              return String(this).replace(pattern, replacement);
+            }
+            var subject = String(this);
+            var needle = String(pattern);
+            if (typeof replacement !== "function") {
+              // split/join rather than replace, so a replacement containing
+              // $& or $1 is inserted literally, as replaceAll specifies.
+              return subject.split(needle).join(replacement);
+            }
+            if (needle === "") return subject;
+            var out = "";
+            var from = 0;
+            var at;
+            while ((at = subject.indexOf(needle, from)) !== -1) {
+              out += subject.slice(from, at) + replacement(needle, at, subject);
+              from = at + needle.length;
+            }
+            return out + subject.slice(from);
+          },
+        });
+      }
+
+      // If the app still fails to start, say so. A wallet that renders
+      // nothing is indistinguishable from a broken phone, and the near-black
+      // background makes it look like the screen never woke up.
+      //
+      // Anything that stops Svelte mounting — a syntax error the WebView
+      // cannot parse, a blocked script, a failed asset — otherwise leaves an
+      // empty #app and a black screen with nothing to report. Collect what
+      // went wrong and, if nothing has mounted shortly after load, show it.
+      (function () {
+        var problems = [];
+        function note(label, detail) {
+          problems.push(label + ": " + detail);
+        }
+
+        // Capture phase, because a failed <script>/<link> load does not
+        // bubble and would otherwise be invisible.
+        window.addEventListener(
+          "error",
+          function (e) {
+            if (e.target && e.target !== window && (e.target.src || e.target.href)) {
+              note("failed to load", e.target.src || e.target.href);
+            } else {
+              note(
+                "error",
+                (e.message || e.type) +
+                  (e.filename ? " @ " + e.filename + ":" + e.lineno : "")
+              );
+            }
+          },
+          true
+        );
+        window.addEventListener("unhandledrejection", function (e) {
+          note("rejection", (e.reason && (e.reason.message || e.reason)) || "unknown");
+        });
+        // A CSP that blocks the bundle is silent otherwise.
+        document.addEventListener("securitypolicyviolation", function (e) {
+          note("blocked by CSP", e.violatedDirective + " -> " + e.blockedURI);
+        });
+
+        function esc(v) {
+          return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        }
+
+        function reportIfDead() {
+          var app = document.getElementById("app");
+          // Svelte mounts into #app, so any child means the app is alive.
+          if (!app || app.childElementCount > 0) return;
+          app.innerHTML =
+            '<div style="color:#e8eaef;background:#14161b;font:13px/1.6 ' +
+            'system-ui,sans-serif;padding:24px;min-height:100vh">' +
+            '<div style="color:#ffc83d;font-size:17px;font-weight:600">' +
+            "ShinyFlakes could not start</div>" +
+            '<div style="margin-top:10px">Please send this text — it says ' +
+            "exactly what failed.</div>" +
+            '<div style="margin-top:14px;color:#ff8a8d;font:11px/1.5 ' +
+            'monospace;word-break:break-all">' +
+            (problems.length ? esc(problems.join("\n")) : "no error was reported") +
+            "</div>" +
+            '<div style="margin-top:14px;color:#939aa8;font:10px/1.4 ' +
+            'monospace;word-break:break-all">' +
+            esc(navigator.userAgent) +
+            "</div></div>";
+        }
+
+        // Long enough that a slow device is not accused of being broken.
+        window.addEventListener("load", function () {
+          setTimeout(reportIfDead, 5000);
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

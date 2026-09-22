@@ -207,7 +207,7 @@
       <div class="danger">
         <p>
           This machine still has your wallet file, but the key that decrypts
-          it is gone from the Windows credential store — so it cannot be opened
+          it is gone from this machine's credential store — so it cannot be opened
           here anymore. No coins are affected: they live on their chains, and
           your seed phrase reaches them in full.
         </p>
@@ -336,16 +336,35 @@
 <style>
   .screen {
     height: 100%;
-    display: grid;
-    place-items: center;
+    /* Centring an over-tall panel with align-items pushes its top above the
+       scroll origin, where it cannot be reached. `margin: auto` on the child
+       centres it while it fits and yields to the scroller once it does not,
+       which is the same result without needing the `safe` keyword that only
+       Chrome 93 and later understands. */
+    display: flex;
+    justify-content: center;
+    overflow-y: auto;
     padding: 32px;
   }
 
+  @media (max-width: 720px) {
+    .screen {
+      padding: 14px;
+    }
+  }
+
   .panel {
+    margin: auto;
     width: 100%;
     max-width: 470px;
     padding: 34px;
     box-shadow: var(--shadow);
+  }
+
+  @media (max-width: 720px) {
+    .panel {
+      padding: 20px;
+    }
   }
 
   header {
@@ -407,7 +426,11 @@
 
   .words {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    /* Not three fixed columns: a phone cannot give a monospace word like
+       "mushroom" a third of 320px, so the cells overflowed their tracks and
+       took the whole card's width with them. auto-fit against a real minimum
+       gives three across on a desktop card and two on a phone. */
+    grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
     gap: 8px;
     margin: 0 0 18px;
     padding: 0;
@@ -418,6 +441,10 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
+    /* Without this a long word sets the track's floor and the grid grows
+       past the card rather than the word wrapping. */
+    min-width: 0;
+    overflow-wrap: anywhere;
     padding: 8px 10px;
     background: var(--bg-raised);
     border: 1px solid var(--border);

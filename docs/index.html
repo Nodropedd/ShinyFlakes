@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>ShinyFlakes — a private wallet that runs on your own machine</title>
+    <meta
+      name="description"
+      content="ShinyFlakes holds Bitcoin, Litecoin, Monero, Ethereum, Solana, Tron, USDC and USDT on your own device. No account, no server. Downloads for Android, Windows and Linux."
+    />
+    <link rel="icon" href="icon.png" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Everything on this page comes from this site. No web fonts, no
+         analytics, no CDNs: the same rule the app keeps. -->
+  </head>
+  <body>
+    <header class="top">
+      <a class="wordmark" href="#top" aria-label="ShinyFlakes, back to top">ShinyFlakes</a>
+      <nav aria-label="Sections">
+        <a href="#download">Download</a>
+        <a href="#features">Features</a>
+        <a href="#verify">Verify</a>
+        <a href="https://github.com/Nodropedd/ShinyFlakes">Source</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <h1>A private wallet that runs on your own machine.</h1>
+          <p class="lead">
+            Bitcoin, Litecoin, Monero, Ethereum, Solana, Tron, USDC and USDT in
+            one place. No account and no server: the keys are encrypted on your
+            device and never leave it.
+          </p>
+          <div class="cta">
+            <a class="btn btn-primary" id="primary-download" href="#download">Download</a>
+            <a class="btn" href="#download">All downloads</a>
+          </div>
+          <p class="meta">
+            <span id="release-version">Free and open source</span>
+            <span aria-hidden="true">·</span> Android, Windows and Linux
+          </p>
+          <ul class="coins" aria-label="Supported assets">
+            <li><img src="coins/btc.svg" alt="" /><span>Bitcoin</span></li>
+            <li><img src="coins/ltc.svg" alt="" /><span>Litecoin</span></li>
+            <li><img src="coins/xmr.svg" alt="" /><span>Monero</span></li>
+            <li><img src="coins/eth.svg" alt="" /><span>Ethereum</span></li>
+            <li><img src="coins/sol.svg" alt="" /><span>Solana</span></li>
+            <li><img src="coins/trx.svg" alt="" /><span>Tron</span></li>
+            <li><img src="coins/usdc.svg" alt="" /><span>USDC</span></li>
+            <li><img src="coins/usdt.svg" alt="" /><span>USDT</span></li>
+          </ul>
+        </div>
+
+        <!-- A picture of the app, drawn with the app's own styles. The figures
+             are for illustration. -->
+        <div class="window" aria-hidden="true">
+          <aside class="w-side">
+            <span class="w-brand">ShinyFlakes</span>
+            <span class="w-item active"
+              ><svg viewBox="0 0 24 24"><path d="M3 7h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 7l2-3h14l2 3M16 13h2" /></svg
+              >Portfolio</span
+            >
+            <span class="w-item"
+              ><svg viewBox="0 0 24 24"><path d="M7 4v13M7 4L4 7M7 4l3 3M17 20V7M17 20l-3-3M17 20l3-3" /></svg
+              >Swap</span
+            >
+            <span class="w-item"
+              ><svg viewBox="0 0 24 24"><path d="M4 5h6v6H4zM14 5h6v3h-6zM4 15h4v4H4zM12 12h8v7h-8z" /></svg
+              >UTXO</span
+            >
+            <span class="w-item"
+              ><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2" /></svg
+              >Activity</span
+            >
+            <span class="w-item"
+              ><svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8M16 5v4M8 15v4" /></svg
+              >Settings</span
+            >
+            <span class="w-item w-lock"
+              ><svg viewBox="0 0 24 24"><path d="M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3" /></svg
+              >Lock</span
+            >
+          </aside>
+          <div class="w-main">
+            <div class="w-head">
+              <div>
+                <span class="w-label">Total balance</span>
+                <span class="w-total">$12,840.52</span>
+                <span class="w-sub">Updated just now, through Tor</span>
+              </div>
+              <div class="w-actions"><span class="w-btn">Receive</span><span class="w-btn">Send</span></div>
+            </div>
+            <div class="w-row">
+              <img src="coins/btc.svg" alt="" /><span class="w-name">Bitcoin<small>BTC</small></span
+              ><span class="w-amt">0.0921 BTC<small>$7,978.01</small></span>
+            </div>
+            <div class="w-row">
+              <img src="coins/xmr.svg" alt="" /><span class="w-name">Monero<small>XMR</small></span
+              ><span class="w-amt">4.8200 XMR<small>$2,818.38</small></span>
+            </div>
+            <div class="w-row">
+              <img src="coins/sol.svg" alt="" /><span class="w-name">Solana<small>SOL</small></span
+              ><span class="w-amt">12.40 SOL<small>$1,467.78</small></span>
+            </div>
+            <div class="w-row">
+              <img src="coins/usdc.svg" alt="" /><span class="w-name">USD Coin<small>USDC</small></span
+              ><span class="w-amt">576.35 USDC<small>$576.35</small></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="download" class="section">
+        <h2>Download</h2>
+        <p class="sub">
+          Pick your system. Every file is listed with its SHA-256, so you can
+          check that what you downloaded is exactly what was published.
+        </p>
+
+        <div class="platforms">
+          <article class="platform card" id="android" data-platform="android">
+            <header>
+              <svg viewBox="0 0 24 24" class="p-icon"><path d="M7 9h10v8a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1zM7 9a5 5 0 0 1 10 0M9.5 6.5l-1-1.5M14.5 6.5l1-1.5M10 20v1.5M14 20v1.5M5 10v4M19 10v4" /></svg>
+              <h3>Android</h3>
+            </header>
+            <ul class="files">
+              <li class="file" data-asset="ShinyFlakes-android.apk">
+                <div class="f-main">
+                  <span class="f-name">Android app</span>
+                  <span class="f-runs">Android 7.0 or newer, any phone or tablet</span>
+                </div>
+                <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-android.apk">.apk <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+            </ul>
+            <p class="how">
+              Open the file on your phone. The first time, Android asks you to
+              allow installs from your browser or files app. Tor and Monero come
+              built in; Monero needs an ARM phone, which is nearly all of them.
+            </p>
+          </article>
+
+          <article class="platform card" id="windows" data-platform="windows">
+            <header>
+              <svg viewBox="0 0 24 24" class="p-icon"><path d="M3 5.5l7.5-1v7H3zM12 4.3L21 3v8.5h-9zM3 12.5h7.5v7L3 18.5zM12 12.5h9V21l-9-1.3z" /></svg>
+              <h3>Windows</h3>
+            </header>
+            <ul class="files">
+              <li class="file" data-asset="ShinyFlakes-windows-x64-setup.exe">
+                <div class="f-main">
+                  <span class="f-name">Installer</span>
+                  <span class="f-runs">Windows 10 and 11, 64-bit</span>
+                </div>
+                <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-windows-x64-setup.exe">.exe <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+              <li class="file" data-asset="ShinyFlakes-windows-x64-portable.exe">
+                <div class="f-main">
+                  <span class="f-name">Portable</span>
+                  <span class="f-runs">The program on its own, nothing installed</span>
+                </div>
+                <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-windows-x64-portable.exe">.exe <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+            </ul>
+            <p class="how">
+              The program is not code-signed yet, so Windows shows "Windows
+              protected your PC" the first time. Choose <b>More info</b>, then
+              <b>Run anyway</b>.
+            </p>
+          </article>
+
+          <article class="platform card" id="linux" data-platform="linux">
+            <header>
+              <svg viewBox="0 0 24 24" class="p-icon"><path d="M12 3c-2.2 0-3.5 1.9-3.5 4.3 0 1.3.3 2.2-.7 3.6C6.3 13 5 15 5.6 17.4c.3 1.2 1.6 1.4 2.4 1.1.9-.3 1.4.6 2.4 1.2 1 .6 2.2.6 3.2 0 1-.6 1.5-1.5 2.4-1.2.8.3 2.1.1 2.4-1.1.6-2.4-.7-4.4-2.2-6.5-1-1.4-.7-2.3-.7-3.6C15.5 4.9 14.2 3 12 3zM10.5 8h.01M13.5 8h.01M10.8 10.3c.8.5 1.6.5 2.4 0" /></svg>
+              <h3>Linux</h3>
+            </header>
+            <ul class="files">
+              <li class="file" data-asset="ShinyFlakes-linux-x86_64.AppImage">
+                <div class="f-main">
+                  <span class="f-name">AppImage</span>
+                  <span class="f-runs">Any 64-bit distro from 2022 on. Needs FUSE 2.</span>
+                </div>
+                <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-x86_64.AppImage">.AppImage <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+              <li class="file" data-asset="ShinyFlakes-linux-amd64.deb">
+                <div class="f-main">
+                  <span class="f-name">Debian, Ubuntu, Mint, Pop!_OS</span>
+                  <span class="f-runs">Ubuntu 22.04+, Debian 12+, Mint 21+</span>
+                </div>
+                <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-amd64.deb">.deb <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+              <li class="file" data-asset="ShinyFlakes-linux-x86_64.rpm">
+                <div class="f-main">
+                  <span class="f-name">Fedora, openSUSE</span>
+                  <span class="f-runs">Fedora 36+, openSUSE Tumbleweed</span>
+                </div>
+                <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-x86_64.rpm">.rpm <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+              <li class="file" data-asset="ShinyFlakes-arch-x86_64.pkg.tar.zst">
+                <div class="f-main">
+                  <span class="f-name">Arch, Manjaro, EndeavourOS, CachyOS</span>
+                  <span class="f-runs">Uses the system's WebKitGTK, so it is small</span>
+                </div>
+                <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-arch-x86_64.pkg.tar.zst">.pkg.tar.zst <span class="f-size"></span></a>
+                <code class="f-sum" title="SHA-256"></code>
+              </li>
+            </ul>
+            <div class="how">
+              <p>Install the one for your distribution:</p>
+              <pre><code>sudo apt install ./ShinyFlakes-linux-amd64.deb
+sudo dnf install ./ShinyFlakes-linux-x86_64.rpm
+sudo pacman -U ShinyFlakes-arch-x86_64.pkg.tar.zst</code></pre>
+              <p>
+                The AppImage needs FUSE 2 (<code>fuse2</code> on Arch,
+                <code>libfuse2</code> on Ubuntu), or run it with
+                <code>--appimage-extract-and-run</code>.
+              </p>
+            </div>
+          </article>
+
+          <article class="platform card soon" id="apple" data-platform="apple">
+            <header>
+              <svg viewBox="0 0 24 24" class="p-icon"><path d="M5 6h14v9H5zM3 18h18M10 18l.5-1.5h3L14 18" /></svg>
+              <h3>Mac and iPhone</h3>
+            </header>
+            <p class="how">
+              Not available yet. Building for Apple devices needs an Apple
+              computer to build on, and for iPhone an Apple developer account.
+            </p>
+          </article>
+        </div>
+
+        <p class="sums-link">
+          All checksums in one file:
+          <a href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
+          <noscript> — this page fills them in beside each file when scripts are on.</noscript>
+        </p>
+      </section>
+
+      <section id="features" class="section">
+        <h2>What it does</h2>
+        <div class="features">
+          <article class="card feature">
+            <h3>Stays on your device</h3>
+            <p>
+              The seed is sealed with AES-256-GCM under a key your system's
+              credential store holds. Add a passphrase and opening it also needs
+              something only you know. There is no account and no server.
+            </p>
+          </article>
+          <article class="card feature">
+            <h3>Routes through Tor</h3>
+            <p>
+              Balance, price and history lookups otherwise show a server your IP
+              beside your addresses. Turn on Tor and they see a Tor exit instead.
+              On Android, Tor ships inside the app.
+            </p>
+          </article>
+          <article class="card feature">
+            <h3>Monero, done properly</h3>
+            <p>
+              Monero's own wallet daemon runs alongside the app, and your keys go
+              from memory straight into it over loopback. Nothing is written to
+              a file or shown on screen.
+            </p>
+          </article>
+          <article class="card feature">
+            <h3>Swaps without an account</h3>
+            <p>
+              Trade one coin for another through ChangeNOW. You send from your
+              own wallet and the other coin comes back to your own address.
+            </p>
+          </article>
+          <article class="card feature">
+            <h3>Asks again when it matters</h3>
+            <p>
+              An authenticator code, checked entirely offline, before showing the
+              seed, before a large send, and on the first unlock after a long
+              absence.
+            </p>
+          </article>
+          <article class="card feature">
+            <h3>Clears itself if abandoned</h3>
+            <p>
+              If the wallet goes unopened for a period you choose, the device
+              forgets it. The coins stay on their chains, and your seed phrase
+              brings them back anywhere.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="verify" class="section">
+        <h2>Check a download</h2>
+        <p class="sub">
+          Compare the output with the SHA-256 shown beside the file above. If it
+          differs by even one character, do not install it.
+        </p>
+        <div class="verify">
+          <div class="card">
+            <h3>Linux</h3>
+            <pre><code>sha256sum ShinyFlakes-linux-x86_64.AppImage</code></pre>
+          </div>
+          <div class="card">
+            <h3>Windows (PowerShell)</h3>
+            <pre><code>Get-FileHash .\ShinyFlakes-windows-x64-setup.exe</code></pre>
+          </div>
+          <div class="card">
+            <h3>macOS or any Unix</h3>
+            <pre><code>shasum -a 256 ShinyFlakes-android.apk</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="source" class="section">
+        <div class="card source">
+          <div>
+            <h2>Built in the open</h2>
+            <p>
+              The whole app is on GitHub. Built from source it works the same,
+              with one exception: swaps are off, because the ChangeNOW partner
+              key goes into the official downloads only and is not in the
+              repository. Android builds also need a signing key of your own.
+            </p>
+          </div>
+          <a class="btn" href="https://github.com/Nodropedd/ShinyFlakes">View the source</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span class="wordmark small">ShinyFlakes</span>
+      <span>Coin icons CC0. Pacifico by Vernon Adams under the SIL Open Font License.</span>
+    </footer>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

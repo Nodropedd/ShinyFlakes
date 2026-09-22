@@ -2,8 +2,7 @@
 
 ## Overview
 A desktop wallet supporting BTC, LTC, XMR, SOL, TRON, USDC, and USDT, built around
-bucketed fund management ("wallets within a wallet") and strong local privacy/security
-defaults. Runs entirely on the user's machine — no backend server.
+strong local privacy/security defaults. Runs entirely on the user's machine — no backend server.
 
 ## Platform & Stack
 - Shell: Tauri (not Electron) — smaller footprint, no Node/Chromium runtime bloat,
@@ -39,7 +38,7 @@ defaults. Runs entirely on the user's machine — no backend server.
 
 ### Encryption at rest
 - AES-256-GCM for all local secrets: seed (encrypted, never plaintext), SMTP
-  credentials, bucket metadata, settings.
+  credentials, settings.
 - Key derived from an OS-keychain-backed secret, not from a user-guessable value.
 
 ### Email notifications (local-only, no server)
@@ -64,42 +63,24 @@ defaults. Runs entirely on the user's machine — no backend server.
   - 3 failed seedphrase attempts leads to full logout (complete key wipe,
     cold-start screen), not just a re-prompt.
 - 2FA gates: seed reveal, private key reveal, seed regeneration/rotation.
-  (Optional, configurable: large payments, bucket add/remove, SMTP settings changes.)
+  (Optional, configurable: large payments, SMTP settings changes.)
 
-## Bucketed Wallet Model ("wallets within a wallet")
-
-The user can divide funds into named buckets inside one master wallet. Payments draw
-from a specific bucket; if that bucket lacks sufficient funds, the app prompts the
-user to pull the shortfall from another bucket before completing the payment. More
-buckets touched means more fees, shown transparently before confirming.
+## Per-Chain Notes
 
 ### BTC / LTC (true UTXO chains)
-- Each UTXO tagged locally with a bucket label; bucket balance = sum of its UTXOs.
-- Payment from bucket A uses A's UTXOs first.
-- Shortfall handling: pull the full shortfall from one other bucket in a single
-  transfer (lump pull, not incremental across many buckets) — minimizes both fee
-  events and the number of visible inter-bucket linkages on-chain.
-- Route consolidation transfers to a fresh unused address within the receiving
-  bucket rather than reusing a previously-public address, to avoid trivial address
-  reuse heuristics.
+- Route consolidation transfers to a fresh unused address rather than reusing a
+  previously-public address, to avoid trivial address reuse heuristics.
 - UTXO fragmentation UI: before/after diagram of UTXO layout, fee shown in native
   unit + live USD equivalent, total value retained vs. spent on fees.
 
 ### XMR
-- Use native subaddresses per bucket/account — the correct native primitive
-  for this, cheaper and more private than emulating the BTC/LTC bucket model.
 - Ring signatures + stealth addresses already provide the privacy properties the
   other chains need bolt-on workarounds for.
 
 ### SOL / TRON / USDC / USDT (account-based chains)
-- Buckets = separate derived addresses/accounts under the same seed, tracked via
-  local ledger metadata.
-- Cross-bucket top-up = a real on-chain transfer between the user's own addresses
-  (two-hop cost: transfer + final payment, both with fees) — shown clearly in the
-  fee estimate before confirming.
-- Known limitation (to disclose in-app, not hide): because buckets share a
-  seed, a chain analyst can potentially cluster same-owner addresses via transfer
-  patterns. No mixing infrastructure is planned initially — CoinJoin-equivalent
+- Known limitation (to disclose in-app, not hide): addresses derived from one
+  seed can potentially be clustered as one owner by a chain analyst through
+  transfer patterns. No mixing infrastructure is planned initially — CoinJoin-equivalent
   coordination is a large, security-critical undertaking better scoped as a
   separate future project rather than bolted on early.
 
@@ -107,12 +88,12 @@ buckets touched means more fees, shown transparently before confirming.
 
 Not a true "reset" — a seed phrase is inseparable from its derived addresses.
 "Regenerating" necessarily means: generate a new seed, then sweep all balances
-from every old address/bucket to new ones. This is real on-chain activity with
+from every old address to new ones. This is real on-chain activity with
 real fees for every asset holding a balance.
 
 Flow:
 1. Require current seedphrase + 2FA to initiate.
-2. Scan all buckets/assets for balances.
+2. Scan all assets for balances.
 3. Calculate and display total estimated sweep fees in USD across every asset
    needing a sweep.
 4. Explicit typed confirmation required (e.g. type "CONFIRM") before proceeding —
@@ -140,7 +121,7 @@ Flow:
   app launch to a third party.
 - Copy style: plain, professional, no marketing slogans, no filler tagline
   formulas — reads like a real product, not generated placeholder text.
-- UTXO/bucket operations always show: amounts moved, fee in native unit + live USD
+- UTXO operations always show: amounts moved, fee in native unit + live USD
   equivalent (price feed via CoinGecko or similar), before/after layout diagram,
   net value retained vs. spent on fees.
 
@@ -149,8 +130,6 @@ Flow:
 - GUI theme/accent color customization (full color picker, not just presets).
 - SMTP/email configuration.
 - 2FA on/off, lockout thresholds (configurable within safe bounds).
-- Bucket rules: default split behavior for incoming funds, fee-pull-order
-  preference for shortfalls.
 - Tip the creator: a settings button that sends a payment to a fixed,
   developer-controlled address. Shows the destination address and an editable
   amount before sending, with an explicit confirm step — never a silent/automatic

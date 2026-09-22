@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use zeroize::Zeroizing;
 
 use crate::crypto::seed::SEED_LEN;
-use crate::store::Bucket;
 
 /// What exists only while the wallet is unlocked. Dropping this zeroes the
 /// seed, which is what lock, logout, and the idle timeout all do.
@@ -14,7 +13,6 @@ pub struct Unlocked {
     /// Kept so the seed can be re-shown for backup behind a confirmation.
     #[allow(dead_code)]
     pub mnemonic: Zeroizing<String>,
-    pub buckets: Vec<Bucket>,
 }
 
 pub struct AppState {
@@ -39,8 +37,12 @@ pub struct TwoFactor {
     /// A freshly generated TOTP secret during setup, before the first code has
     /// confirmed the authenticator holds it. Never persisted until confirmed.
     pub pending_secret: Option<String>,
-    /// When the current pass runs out, if a check has been passed.
+    /// When the current authenticator pass runs out, if a code was checked.
     pub pass_expiry: Option<i64>,
+    /// Set at unlock when the wallet had sat unopened past the chosen limit.
+    /// Cleared only by producing the factors the policy asks for, so a return
+    /// after a long silence cannot be waved through.
+    pub dormant_pending: bool,
     /// Consecutive wrong codes, for the lockout.
     pub wrong: u32,
     /// When a lockout lifts, if one is in force.

@@ -28,6 +28,13 @@ pub enum WalletError {
     #[error("The vault could not be decrypted. The file may be damaged.")]
     Decrypt,
 
+    #[error(
+        "Your saved settings could not be read. Your wallet and your coins are \
+         not affected — this file only holds preferences, the mail setup and \
+         the two-factor secret. Reset it to carry on."
+    )]
+    SettingsUnreadable,
+
     #[error("An address could not be derived from the seed: {0}")]
     Derivation(String),
 
@@ -44,7 +51,7 @@ pub enum WalletError {
     TwoFactorRequired,
 
     #[error(
-        "This machine has a wallet file but no longer holds the key that          decrypts it. The key lives in the Windows credential store and it          is gone. Restore from your seed phrase on a fresh install."
+        "This machine has a wallet file but no longer holds the key that decrypts it. The key lived in this machine's credential store and it is gone. Restore from your seed phrase on a fresh install."
     )]
     KeyMissing,
 }
@@ -62,6 +69,7 @@ impl WalletError {
             Self::Keychain(_) => "Keychain",
             Self::Storage(_) => "Storage",
             Self::Decrypt => "Decrypt",
+            Self::SettingsUnreadable => "SettingsUnreadable",
             Self::Derivation(_) => "Derivation",
             Self::Network(_) => "Network",
             Self::Unsupported(_) => "Unsupported",

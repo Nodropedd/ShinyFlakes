@@ -1,0 +1,42 @@
+{
+  "version": "0.1.0",
+  "tag": "v0.1.0",
+  "date": "2026-09-22",
+  "assets": [
+    {
+      "name": "ShinyFlakes-android.apk",
+      "size": 41822175,
+      "sha256": "795f30ac90c96fc0fbbfc369255f2a568e1bf9c95dd5095633d0342af21953fa"
+    },
+    {
+      "name": "ShinyFlakes-windows-x64-setup.exe",
+      "size": 2548393,
+      "sha256": "08593e609a9694cd1bd5ef3bb85c7021858137e4e3c78b9e152153d9caecbb12"
+    },
+    {
+      "name": "ShinyFlakes-windows-x64-portable.exe",
+      "size": 6218752,
+      "sha256": "878fc74a861e169aa47122eed43ab390411d0f0d769bbdb3c267717131444f96"
+    },
+    {
+      "name": "ShinyFlakes-linux-x86_64.AppImage",
+      "size": 81963512,
+      "sha256": "0770290fb91026ec1a70728411c1a69c30b1c013ab5f33bcbd77c31550f930dc"
+    },
+    {
+      "name": "ShinyFlakes-linux-amd64.deb",
+      "size": 3873802,
+      "sha256": "0e194701019bb3bc5e6e4d7200a6e71f79024ebde8b849b631cd2acddb5332b5"
+    },
+    {
+      "name": "ShinyFlakes-linux-x86_64.rpm",
+      "size": 3875353,
+      "sha256": "ad226d42549e237b2fd60c4d1622359d9238e1a7db5fc58026926c60f0e2c089"
+    },
+    {
+      "name": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
+      "size": 2987051,
+      "sha256": "e7dce861f0753c02ebb2279ce2084958edc7dc1c3dd0db543d5fee38d2a392fc"
+    }
+  ]
+}

@@ -9,26 +9,54 @@
 //! list would only prove the list and the file came from the same place; a
 //! hash compiled into the binary proves it is the exact build this code was
 //! written against.
+//!
+//! On Android the same official release arrives inside the APK instead,
+//! checked against its pinned hash when the app is built, because Android will
+//! not run a downloaded program; see `crate::bundled`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use serde::Serialize;
+#[cfg(not(target_os = "android"))]
 use sha2::{Digest, Sha256};
 
 use crate::error::{Result, WalletError};
 
 const VERSION: &str = "v0.18.5.1";
+
+/// The CLI release is built per platform, and Monero ships the two in
+/// different container formats: a .zip for Windows, a .tar.bz2 for Linux.
+#[cfg(windows)]
 const ARCHIVE: &str = "monero-win-x64-v0.18.5.1.zip";
+#[cfg(windows)]
 const URL: &str = "https://downloads.getmonero.org/cli/monero-win-x64-v0.18.5.1.zip";
+#[cfg(target_os = "linux")]
+const URL: &str = "https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.1.tar.bz2";
 
 /// Published by the Monero project at getmonero.org/downloads/hashes.txt and
 /// checked against the real download before being written here.
+#[cfg(windows)]
 const SHA256: &str = "cf2ae8273977697d9ef2031c7337b781e6e5936578f602444b2990a173a2437d";
+#[cfg(target_os = "linux")]
+const SHA256: &str = "22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958";
 
 /// Folder inside the archive.
+#[cfg(windows)]
 const INNER: &str = "monero-x86_64-w64-mingw32-v0.18.5.1";
+#[cfg(target_os = "linux")]
+const INNER: &str = "monero-x86_64-linux-gnu-v0.18.5.1";
+
+/// The wallet daemon inside that folder.
+#[cfg(windows)]
+const RPC_BIN: &str = "monero-wallet-rpc.exe";
+#[cfg(all(unix, not(target_os = "android")))]
+const RPC_BIN: &str = "monero-wallet-rpc";
+/// The name `scripts/android-binaries.mjs` packs it into the APK under. The
+/// installer only extracts files named like libraries, so it has to be one.
+#[cfg(target_os = "android")]
+const RPC_BIN: &str = "libmonero_wallet_rpc.so";
 
 /// A public node to read the chain from until the user runs their own.
 ///
@@ -64,10 +92,23 @@ pub fn install_dir(app_data: &Path) -> PathBuf {
     app_data.join("monero")
 }
 
+#[cfg(not(target_os = "android"))]
 fn binary(app_data: &Path) -> PathBuf {
-    install_dir(app_data)
-        .join(INNER)
-        .join("monero-wallet-rpc.exe")
+    install_dir(app_data).join(INNER).join(RPC_BIN)
+}
+
+/// The wallet daemon, if it is there to run.
+fn installed_binary(app_data: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app_data;
+        crate::bundled::executable(RPC_BIN)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let exe = binary(app_data);
+        exe.is_file().then_some(exe)
+    }
 }
 
 fn wallet_dir(app_data: &Path) -> PathBuf {
@@ -80,7 +121,7 @@ fn wallet_path(app_data: &Path) -> PathBuf {
 
 pub fn state(app_data: &Path, running: bool) -> SetupState {
     SetupState {
-        installed: binary(app_data).is_file(),
+        installed: installed_binary(app_data).is_some(),
         wallet_exists: wallet_path(app_data).is_file(),
         running,
         version: VERSION.to_string(),
@@ -89,8 +130,29 @@ pub fn state(app_data: &Path, running: bool) -> SetupState {
 
 // ---------- install ----------
 
+/// On Android there is nothing to fetch: the daemon came inside the APK,
+/// checked against its pinned hash when the app was built.
+#[cfg(target_os = "android")]
+pub async fn install(app_data: &Path) -> Result<()> {
+    if installed_binary(app_data).is_some() {
+        return Ok(());
+    }
+    // Monero builds its Android release for ARM only, so on anything else the
+    // honest answer is that there is no official build, not a packaging slip.
+    let why = if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
+        "This copy of ShinyFlakes was built without Monero's wallet daemon inside it, \
+         and Android does not let an app fetch a program afterwards. Build it with \
+         scripts/android-binaries.mjs in place."
+    } else {
+        "Monero publishes its Android wallet daemon for ARM phones only, and this \
+         device is not one."
+    };
+    Err(WalletError::Unsupported(why.into()))
+}
+
 /// Downloads the official release, checks it against the pinned hash, and
 /// unpacks it. Refuses to unpack anything whose hash does not match.
+#[cfg(not(target_os = "android"))]
 pub async fn install(app_data: &Path) -> Result<()> {
     if binary(app_data).is_file() {
         return Ok(());
@@ -99,7 +161,7 @@ pub async fn install(app_data: &Path) -> Result<()> {
     let dir = install_dir(app_data);
     std::fs::create_dir_all(&dir).map_err(|e| oops("creating the folder", e))?;
 
-    let bytes = reqwest::Client::builder()
+    let bytes = crate::http_client::builder()
         .timeout(std::time::Duration::from_secs(900))
         .build()
         .map_err(|e| oops("http client", e))?
@@ -125,8 +187,35 @@ pub async fn install(app_data: &Path) -> Result<()> {
         )));
     }
 
+    unpack(&dir, &bytes)?;
+
+    let exe = binary(app_data);
+    if !exe.is_file() {
+        return Err(oops("unpacking", "the wallet daemon was not in the archive"));
+    }
+
+    // The tar carries a mode and the zip does not, but relying on either
+    // leaves a daemon that only fails at spawn time with "permission denied".
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| oops("permissions", e))?;
+    }
+
+    Ok(())
+}
+
+/// Unpacks the release into `dir`, refusing any entry whose path would escape
+/// it — that is how a crafted archive overwrites files elsewhere on the disk.
+///
+/// The zip reader needs to seek, so the Windows archive goes to disk first;
+/// the tar reader streams, so the Linux one is decompressed straight from
+/// memory.
+#[cfg(windows)]
+fn unpack(dir: &Path, bytes: &[u8]) -> Result<()> {
     let archive = dir.join(ARCHIVE);
-    std::fs::write(&archive, &bytes).map_err(|e| oops("saving the archive", e))?;
+    std::fs::write(&archive, bytes).map_err(|e| oops("saving the archive", e))?;
 
     let file = std::fs::File::open(&archive).map_err(|e| oops("opening the archive", e))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| oops("reading the archive", e))?;
@@ -134,8 +223,7 @@ pub async fn install(app_data: &Path) -> Result<()> {
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| oops("reading an entry", e))?;
 
-        // enclosed_name refuses paths that would escape the folder, which is
-        // how a malicious archive overwrites files elsewhere on the disk.
+        // enclosed_name refuses paths that would escape the folder.
         let Some(relative) = entry.enclosed_name() else {
             continue;
         };
@@ -154,9 +242,37 @@ pub async fn install(app_data: &Path) -> Result<()> {
     }
 
     let _ = std::fs::remove_file(&archive);
+    Ok(())
+}
 
-    if !binary(app_data).is_file() {
-        return Err(oops("unpacking", "the wallet daemon was not in the archive"));
+#[cfg(target_os = "linux")]
+fn unpack(dir: &Path, bytes: &[u8]) -> Result<()> {
+    let bz = bzip2::read::BzDecoder::new(std::io::Cursor::new(bytes));
+    let mut archive = tar::Archive::new(bz);
+
+    for entry in archive.entries().map_err(|e| oops("reading the archive", e))? {
+        let mut entry = entry.map_err(|e| oops("reading an entry", e))?;
+        let relative = entry
+            .path()
+            .map_err(|e| oops("reading an entry", e))?
+            .into_owned();
+
+        if relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue;
+        }
+        let target = dir.join(&relative);
+
+        if entry.header().entry_type().is_dir() {
+            std::fs::create_dir_all(&target).map_err(|e| oops("creating a folder", e))?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| oops("creating a folder", e))?;
+        }
+        entry.unpack(&target).map_err(|e| oops("writing a file", e))?;
     }
     Ok(())
 }
@@ -165,10 +281,9 @@ pub async fn install(app_data: &Path) -> Result<()> {
 
 /// Starts the daemon with no wallet open, so it can be asked to make one.
 pub fn spawn(app_data: &Path, daemon: &str) -> Result<Child> {
-    let exe = binary(app_data);
-    if !exe.is_file() {
+    let Some(exe) = installed_binary(app_data) else {
         return Err(oops("start", "the Monero wallet daemon is not installed"));
-    }
+    };
 
     let dir = wallet_dir(app_data);
     std::fs::create_dir_all(&dir).map_err(|e| oops("creating the wallet folder", e))?;
@@ -199,6 +314,27 @@ pub fn spawn(app_data: &Path, daemon: &str) -> Result<Child> {
         // user should have to keep on screen.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    // Android starts an app's processes in / with no HOME. Monero writes its
+    // log beside its own executable by default, which here is the read-only
+    // folder the installer extracted it to, and keeps its shared ring
+    // database under HOME. Give both a home in the app's own folder, and keep
+    // the log small: a phone has no reason to hold fifty 100 MB logs.
+    #[cfg(target_os = "android")]
+    {
+        let logs = install_dir(app_data);
+        std::fs::create_dir_all(&logs).map_err(|e| oops("creating the log folder", e))?;
+        command
+            .arg("--log-file")
+            .arg(logs.join("monero-wallet-rpc.log"))
+            .arg("--max-log-file-size")
+            .arg("1048576")
+            .arg("--max-log-files")
+            .arg("2")
+            .current_dir(&dir)
+            .env("HOME", app_data);
+        crate::bundled::keep_descriptors_private(&mut command);
     }
 
     command.spawn().map_err(|e| oops("start", e))
@@ -275,13 +411,20 @@ pub async fn ensure_running(
 }
 
 /// Waits for the daemon to answer, since it takes a moment to bind.
+///
+/// A phone gets a minute rather than the desktop's sixteen seconds. The daemon
+/// is a 30 MB program, and on a slow or older phone loading it and opening its
+/// ring database can take longer than the desktop allowance on its own, which
+/// surfaced as "did not come up in time" for a daemon that was about to. The
+/// loop returns as soon as it answers, so the extra only costs when needed.
 pub async fn wait_until_ready(endpoint: &str) -> Result<()> {
-    for attempt in 0..40 {
+    const ATTEMPTS: u32 = if cfg!(target_os = "android") { 150 } else { 40 };
+    for attempt in 0..ATTEMPTS {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         if super::xmr_rpc::ping(endpoint).await.is_ok() {
             return Ok(());
         }
-        if attempt == 39 {
+        if attempt == ATTEMPTS - 1 {
             break;
         }
     }
@@ -351,7 +494,7 @@ async fn daemon_height(daemon: &str) -> Result<u64> {
         height: u64,
     }
 
-    let info: Info = reqwest::Client::builder()
+    let info: Info = crate::http_client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| oops("http client", e))?
@@ -377,11 +520,12 @@ pub fn wallet_password() -> Result<String> {
 /// Writes a short note next to the wallet explaining what it is, for anyone
 /// who finds the folder later and wonders.
 pub fn write_readme(app_data: &Path) {
+    let store = crate::keychain::STORE_NAME;
     let note = format!(
         "This folder holds a Monero wallet created by ShinyFlakes {VERSION}.\n\
          \n\
          It was restored from the keys this wallet derives from your seed\n\
-         phrase. Its password is stored in the Windows credential store.\n\
+         phrase. Its password is stored in the {store}.\n\
          \n\
          Deleting it loses nothing permanently: it can be recreated from the\n\
          same seed, using the keys shown under Settings, Monero keys.\n"
@@ -396,15 +540,17 @@ pub fn write_readme(app_data: &Path) {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn the_pinned_hash_is_a_sha256() {
         assert_eq!(SHA256.len(), 64);
         assert!(SHA256.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn paths_stay_inside_the_app_folder() {
-        let root = Path::new("C:/example/appdata");
+        let root = Path::new("/example/appdata");
         assert!(binary(root).starts_with(root));
         assert!(wallet_path(root).starts_with(root));
         assert!(install_dir(root).starts_with(root));

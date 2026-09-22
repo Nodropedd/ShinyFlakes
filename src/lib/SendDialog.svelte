@@ -552,10 +552,12 @@
 
 <style>
   .scrim {
-    position: fixed; inset: 0; display: grid; place-items: center;
+    position: fixed; inset: 0; display: flex; justify-content: center;
+    overflow-y: auto;
     padding: 24px; background: rgba(0, 0, 0, 0.55); z-index: 50; border: 0;
   }
   .panel {
+    margin: auto;
     width: 100%; max-width: 440px; padding: 20px 22px 22px;
     box-shadow: var(--shadow); text-align: left; cursor: default;
   }

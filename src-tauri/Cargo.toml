@@ -8,14 +8,16 @@ default-run = "shinyflakes"
 
 [lib]
 name = "shinyflakes_lib"
-crate-type = ["lib"]
+# Android loads the core as a shared object rather than linking a binary
+# against it, so the same crate has to be able to come out as a cdylib.
+# "rlib" is what the desktop binary links, and is what plain "lib" meant.
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-single-instance = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -42,22 +44,52 @@ sha2 = "0.10"
 sha3 = "0.10"
 ripemd = "0.1"
 
-# OS keychain holds the vault key, so the encryption key is never derived
-# from anything the user could pick badly.
-keyring = { version = "3", default-features = false, features = [
-  "windows-native",
-] }
 monero = "0.21.0"
 curve25519-dalek = "4.1.3"
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "json", "socks"] }
 base64 = "0.23.1"
 tokio = { version = "1.53.1", features = ["rt", "macros", "time"] }
 futures = "0.3.34"
-zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
 flate2 = "1.1.10"
 tar = "0.4.46"
 argon2 = "0.5.3"
-lettre = { version = "0.11.19", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "hostname"] }
+
+# The OS credential store and the Monero archive format are the two places
+# where the platforms genuinely differ, so they are declared per target rather
+# than papered over with a runtime branch.
+#
+# keyring: the Windows credential store on Windows, the Secret Service
+# (GNOME Keyring, KWallet) over D-Bus on Linux. Both keep the vault key out of
+# the wallet file and tie it to the desktop login session, which is the whole
+# reason the key is not derived from a passphrase.
+#
+# Archive: the Monero CLI ships as .zip for Windows and .tar.bz2 for Linux.
+
+# Desktop only: there is no second instance to focus on a phone, and the
+# plugin does not build for Android.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", default-features = false, features = [
+  "windows-native",
+] }
+zip = { version = "4.2.0", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = [
+  "sync-secret-service",
+  "crypto-rust",
+] }
+bzip2 = "0.6"
+
+# Android has no OS certificate verifier reachable without JVM plumbing, so
+# its HTTP clients trust Mozilla's roots compiled in. See src/http_client.rs.
+[target.'cfg(target_os = "android")'.dependencies]
+webpki-root-certs = "1"
+# fcntl in the child before exec, so Tor and the Monero daemon do not inherit
+# the WebView's open files. See src/bundled.rs.
+libc = "0.2"
 
 [profile.release]
 opt-level = "s"

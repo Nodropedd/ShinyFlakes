@@ -1,7 +1,7 @@
 <script lang="ts">
   import Wordmark from "./Wordmark.svelte";
 
-  export type View = "portfolio" | "swap" | "buckets" | "utxo" | "activity" | "settings";
+  export type View = "portfolio" | "swap" | "utxo" | "activity" | "settings";
 
   let {
     current,
@@ -19,7 +19,6 @@
     // Two arrows, one each way
     { id: "swap", label: "Swap", path: "M7 4v13M7 4L4 7M7 4l3 3M17 20V7M17 20l-3-3M17 20l3-3" },
     // Stacked containers
-    { id: "buckets", label: "Buckets", path: "M4 5h16l-2 5H6zM6 10h12l-1.5 9h-9z" },
     // Fragments
     { id: "utxo", label: "UTXO", path: "M4 5h6v6H4zM14 5h6v3h-6zM4 15h4v4H4zM12 12h8v7h-8z" },
     // Clock
@@ -119,5 +118,68 @@
 
   .lock {
     margin-top: auto;
+  }
+
+  /* ---- phone ----------------------------------------------------------
+     Portrait has no room for a 208px column beside the content, so the rail
+     becomes a bottom bar: thumb-reachable, and it keeps the labels rather
+     than reducing the sections to icons nobody can identify. The wordmark
+     goes with it — the content below already says which screen this is. */
+  @media (max-width: 720px) {
+    .sidebar {
+      width: 100%;
+      flex-direction: row;
+      gap: 0;
+      padding: 0;
+      border-right: none;
+      border-top: 1px solid var(--border);
+      /* Clear of the gesture bar. The inset is the real measurement, but
+         a gesture pill sits in a band a few px tall that reports zero on
+         some devices, so a floor of 10px keeps the labels legible either
+         way. */
+      padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    }
+
+    .brand {
+      display: none;
+    }
+
+    ul {
+      flex: 1;
+      flex-direction: row;
+      gap: 0;
+    }
+
+    li {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .item {
+      flex-direction: column;
+      gap: 3px;
+      padding: 9px 2px;
+      border-radius: 0;
+      text-align: center;
+      font-size: 10.5px;
+    }
+
+    /* A background block across a bar this tight reads as noise, so the
+       current section is marked by colour and a rule above it instead. */
+    .item.active {
+      background: none;
+      box-shadow: inset 0 2px 0 var(--accent);
+    }
+
+    .item:hover {
+      background: none;
+    }
+
+    .lock {
+      flex: none;
+      margin-top: 0;
+      width: 62px;
+      border-left: 1px solid var(--border);
+    }
   }
 </style>

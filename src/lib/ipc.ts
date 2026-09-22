@@ -24,6 +24,15 @@ export type AssetId =
  *  coin of that chain. */
 export type NetworkId = "SOL" | "ETH" | "TRON";
 
+/** Whether the app opens straight into the wallet on start. */
+export interface StaySignedIn {
+  /** The owner turned it on. */
+  enabled: boolean;
+  /** It can work on this wallet: not with a vault passphrase, which has to be
+   *  typed on every open. */
+  available: boolean;
+}
+
 export interface VaultStatus {
   /** A vault file exists on disk. False means cold start, no wallet yet. */
   initialized: boolean;
@@ -36,16 +45,6 @@ export interface VaultStatus {
   keyMissing: boolean;
 }
 
-export interface Bucket {
-  id: string;
-  name: string;
-  asset: AssetId;
-  /** Smallest unit of the asset, as a decimal string. JS numbers cannot hold
-   *  satoshi or atomic-unit values without loss, so amounts never cross the
-   *  bridge as numbers. */
-  balanceMinor: string;
-  addressCount: number;
-}
 
 export interface AssetAddress {
   asset: AssetId;
@@ -240,17 +239,6 @@ export interface SweepResult {
   error: string | null;
 }
 
-export interface EmailConfig {
-  /** Enough is stored to actually send: server, address, username, password.
-   *  Used only for optional reveal notices now, not for two-factor. */
-  configured: boolean;
-  host: string;
-  port: number;
-  username: string;
-  from: string;
-  /** A password is stored. Its value never crosses the bridge. */
-  hasPassword: boolean;
-}
 
 export interface TwoFactorState {
   enabled: boolean;
@@ -300,6 +288,27 @@ export interface SwapTrade {
   status: string;
 }
 
+/** When the wallet asks for the authenticator a second time. */
+export interface StepUpView {
+  /** Days unopened before the next unlock has to step up. Zero is off. */
+  dormantDays: number;
+  largeSend: boolean;
+  /** Whether the authenticator is set up. Nothing is asked for when it is not:
+   *  a gate nobody can pass is a lockout, not a protection. */
+  totpAvailable: boolean;
+  largeSendUsd: number;
+  largeSendShare: number;
+}
+
+/** What still has to be produced for a guarded action. */
+export interface Challenge {
+  totp: boolean;
+  totpDone: boolean;
+}
+
+/** The actions that can be guarded, as the Rust side names them. */
+export type GuardedAction = "reveal" | "send" | "dormant";
+
 /** Mirrors the `WalletError` enum on the Rust side. */
 export interface IpcError {
   kind: string;
@@ -344,8 +353,18 @@ export const ipc = {
   setVaultPassphrase: (current: string | null, next: string | null) =>
     call<void>("set_vault_passphrase", { current, next }),
 
-  /** Drops derived key material, keeps the vault file. */
+  /** Drops derived key material, keeps the vault file. Also pauses staying
+   *  signed in until the phrase is typed again. */
   lock: () => call<void>("lock"),
+
+  /** On start: opens the wallet without the phrase if the owner asked for
+   *  that. False means ask for the phrase as usual. */
+  autoUnlock: () => call<boolean>("auto_unlock"),
+
+  staySignedInState: () => call<StaySignedIn>("stay_signed_in_state"),
+
+  /** Turning it on needs two-factor when that is on, like revealing the seed. */
+  setStaySignedIn: (on: boolean) => call<StaySignedIn>("set_stay_signed_in", { on }),
 
   /** Full wipe back to cold start, per the security model. */
   logout: () => call<void>("logout"),
@@ -354,7 +373,6 @@ export const ipc = {
    *  seed phrase written down elsewhere. */
   forgetWallet: () => call<void>("forget_wallet"),
 
-  listBuckets: () => call<Bucket[]>("list_buckets"),
 
   /** Receiving addresses derived from the seed. Local only, no network. */
   listAddresses: () => call<AssetAddress[]>("list_addresses"),
@@ -465,20 +483,31 @@ export const ipc = {
    *  Gated by two-factor when it is on; rejects with TwoFactorRequired. */
   revealMoneroKeys: () => call<MoneroKeys>("reveal_monero_keys"),
 
-  /** The mail settings (for optional reveal notices), without the password. */
-  emailConfig: () => call<EmailConfig>("email_config"),
+  /** Whether the settings file is present but unreadable, so the interface
+   *  can offer a reset instead of throwing at every panel. */
+  settingsUnreadable: () => call<boolean>("settings_unreadable"),
 
-  /** Saves the mail settings. A blank password keeps the stored one. */
-  setEmailConfig: (
-    host: string,
-    port: number,
-    username: string,
-    password: string | null,
-    from: string,
-  ) => call<EmailConfig>("set_email_config", { host, port, username, password, from }),
+  /** Puts the unreadable settings aside and starts fresh. Loses the step-up
+   *  choices and the TOTP pairing — never the seed. */
+  resetSettings: () => call<void>("reset_settings"),
 
-  /** Sends a test message to the configured mailbox. */
-  sendTestEmail: () => call<void>("send_test_email"),
+  /** When the wallet asks again. */
+  stepUpSettings: () => call<StepUpView>("step_up_settings"),
+
+  setStepUpSettings: (dormantDays: number, largeSend: boolean) =>
+    call<StepUpView>("set_step_up_settings", { dormantDays, largeSend }),
+
+  /** What the user still has to produce for a given action. */
+  stepUpChallenge: (action: GuardedAction) =>
+    call<Challenge>("step_up_challenge", { action }),
+
+  /** Whether this session still owes a factor for returning after a long
+   *  silence. Asked right after unlocking. */
+  dormantStepUpPending: () => call<boolean>("dormant_step_up_pending"),
+
+  /** Clears that debt once the code has been produced. False means it has
+   *  not been. */
+  clearDormantStepUp: () => call<boolean>("clear_dormant_step_up"),
 
   /** Whether two-factor is on, and whether a pass is live now. */
   twoFactorState: () => call<TwoFactorState>("two_factor_state"),
@@ -500,8 +529,7 @@ export const ipc = {
   verify2faSeed: (mnemonic: string) =>
     call<boolean>("verify_2fa_seed", { mnemonic }),
 
-  /** The seed phrase, for backup. Gated by two-factor when on; every reveal
-   *  sends a notice to the mailbox if one is configured. */
+  /** The seed phrase, for backup. Gated by two-factor when on. */
   revealSeed: () => call<string>("reveal_seed"),
 
   /** A swap rate. Reaches ChangeNOW; broadcasts nothing. */

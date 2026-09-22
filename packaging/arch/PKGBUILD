@@ -1,0 +1,32 @@
+# Packages the Linux build for Arch.
+#
+# Tauri makes a .deb, not an Arch package, so this repackages that same
+# build: build the app first (`npm run tauri build`), copy
+# src-tauri/target/release/bundle/deb/ShinyFlakes_<version>_amd64.deb next to
+# this file, then run `makepkg -si`. The binary links against the system's
+# WebKitGTK, which keeps the package at a few megabytes; the AppImage carries
+# its own copy instead and runs anywhere FUSE 2 is installed.
+#
+# makepkg needs base-devel (for fakeroot).
+
+pkgname=shinyflakes-bin
+pkgver=0.1.0
+pkgrel=3
+pkgdesc="Privacy-focused multi-chain wallet"
+arch=('x86_64')
+# No licence file in the repository yet.
+license=('custom')
+# What the binary links against directly; webkit2gtk-4.1 brings the rest.
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'glib2' 'cairo' 'gdk-pixbuf2' 'dbus' 'gcc-libs' 'glibc')
+provides=('shinyflakes')
+conflicts=('shinyflakes')
+# Shipped exactly as built.
+options=('!strip' '!debug')
+source=("ShinyFlakes_${pkgver}_amd64.deb")
+# Built locally from this checkout each time, so there is no fixed hash to pin.
+sha256sums=('SKIP')
+
+package() {
+  # makepkg has already unpacked the .deb's ar container into $srcdir.
+  bsdtar -xf data.tar.gz -C "$pkgdir"
+}

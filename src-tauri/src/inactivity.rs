@@ -132,6 +132,13 @@ fn save(app_data: &Path, record: &Record) -> Result<()> {
     std::fs::write(store_path(app_data), text).map_err(|e| WalletError::Storage(e.to_string()))
 }
 
+/// Unix second of the last unlock, or `None` on a machine that has never been
+/// used. Read before [`record_seen`] moves it, when the question is how long
+/// the wallet sat untouched.
+pub fn last_seen(app_data: &Path) -> Option<i64> {
+    read(app_data).map(|record| record.last_seen)
+}
+
 /// Marks the wallet as used, and cancels any sweep in progress.
 ///
 /// Called on every unlock. Clearing grace_started here is what makes a

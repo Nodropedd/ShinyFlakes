@@ -1,21 +1,49 @@
 <script lang="ts">
-  // The two-factor gate, shown before a sensitive reveal when two-factor is on.
-  // The code comes from the user's authenticator app (TOTP) — no email, no
-  // server. It checks what they type, and offers the seed phrase as a fallback
-  // for when the phone is not to hand. On success it calls onpassed; the caller
-  // then re-runs the reveal, which now finds a valid pass waiting.
-  import { ipc } from "./ipc";
+  // The step-up gate, shown before anything worth stopping for.
+  //
+  // Whether it asks at all is the core's decision, not this component's: it
+  // asks stepUpChallenge what is outstanding. The code is TOTP, computed
+  // offline from a secret on the user's phone, so nothing about it crosses a
+  // network. The seed phrase stays available as a fallback, since proving the
+  // seed is at least as strong as any code.
+  //
+  // On success it calls onpassed; the caller re-runs its action, which now
+  // finds a valid pass waiting.
+  import { ipc, type Challenge, type GuardedAction } from "./ipc";
 
   let {
     purpose,
+    action = "reveal",
     onpassed,
     oncancel,
   }: {
     /** A short phrase for the copy, e.g. "reveal your seed phrase". */
     purpose: string;
+    /** Which guarded action this is, so the core can say what it needs. */
+    action?: GuardedAction;
     onpassed: () => void;
     oncancel: () => void;
   } = $props();
+
+  let challenge = $state<Challenge | null>(null);
+
+  /// Reloads what is outstanding, and finishes if nothing is.
+  async function advance() {
+    try {
+      challenge = await ipc.stepUpChallenge(action);
+      if (!(challenge.totp && !challenge.totpDone)) {
+        onpassed();
+        return;
+      }
+      mode = "code";
+    } catch (e) {
+      error = (e as { message?: string }).message ?? String(e);
+    }
+  }
+
+  $effect(() => {
+    void advance();
+  });
 
   let mode = $state<"code" | "seed">("code");
   let code = $state("");
@@ -46,7 +74,8 @@
       const res = await ipc.verify2fa(code.trim());
       switch (res.status) {
         case "ok":
-          onpassed();
+          // Not necessarily finished: "both" may still want the other one.
+          await advance();
           return;
         case "wrong":
           error = `That code is wrong. ${res.remaining ?? 0} ${
@@ -80,7 +109,7 @@
       const ok = await ipc.verify2faSeed(seedInput.trim());
       seedInput = "";
       if (ok) {
-        onpassed();
+        await advance();
       } else {
         error = "That phrase does not match this wallet.";
       }
@@ -108,8 +137,7 @@
     </header>
 
     <p class="lede muted">
-      Two-factor is on, so to {purpose} enter the current code from your
-      authenticator app.
+      To {purpose}, enter the current code from your authenticator app.
     </p>
 
     {#if mode === "code"}
@@ -194,14 +222,16 @@
   .scrim {
     position: fixed;
     inset: 0;
-    display: grid;
-    place-items: center;
+    display: flex;
+    justify-content: center;
+    overflow-y: auto;
     padding: 24px;
     background: rgba(0, 0, 0, 0.55);
     z-index: 60;
     border: 0;
   }
   .panel {
+    margin: auto;
     width: 100%;
     max-width: 400px;
     padding: 20px 22px 22px;

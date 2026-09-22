@@ -55,11 +55,17 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
 
-  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold", system-ui,
+  /* Segoe and Cascadia are Windows-only, so each stack keeps going through
+     the GNOME and generic-Linux faces before falling back to system-ui.
+     Pacifico is bundled, so the brand face needs no fallback of its own. */
+  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", "Adwaita Sans",
+    "Cantarell", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Semibold",
+    "Adwaita Sans", "Cantarell", "Noto Sans", "DejaVu Sans", system-ui,
     sans-serif;
   --font-brand: "Pacifico", "Segoe Script", cursive;
-  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  --font-mono: "Cascadia Mono", "Consolas", "Adwaita Mono", "JetBrains Mono",
+    "DejaVu Sans Mono", ui-monospace, monospace;
 
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }

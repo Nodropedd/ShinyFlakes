@@ -54,29 +54,18 @@ fn derive(keychain: &VaultKey, passphrase: Option<&str>, salt: &[u8; SALT_LEN]) 
     Ok(VaultKey::from_bytes(key))
 }
 
-/// One named bucket. Balances cross the IPC bridge as decimal strings in the
-/// asset's smallest unit, because a JS number cannot hold a satoshi count or a
-/// Monero atomic-unit amount without silently rounding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Bucket {
-    pub id: String,
-    pub name: String,
-    pub asset: String,
-    pub balance_minor: String,
-    pub address_count: u32,
-}
-
 /// Everything held encrypted at rest. SMTP credentials and settings land here
 /// too once those features exist; nothing about this wallet is stored in the
 /// clear.
+///
+/// Vaults written before buckets were removed still carry a `buckets` list.
+/// Unknown fields are ignored when reading, so those open as they always did,
+/// and the field is simply not written back.
 // No Debug derive: this holds the mnemonic, and a stray dbg! or a panic
 // message would put it somewhere it can be read.
 #[derive(Default, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct VaultPayload {
     pub mnemonic: String,
-    #[zeroize(skip)]
-    pub buckets: Vec<Bucket>,
 }
 
 pub fn exists(path: &Path) -> bool {
@@ -181,20 +170,11 @@ mod tests {
 
         let payload = VaultPayload {
             mnemonic: "phrase goes here".into(),
-            buckets: vec![Bucket {
-                id: "b1".into(),
-                name: "Rent".into(),
-                asset: "BTC".into(),
-                balance_minor: "125000".into(),
-                address_count: 2,
-            }],
         };
 
         write(&path, &key, None, &payload).unwrap();
         let back = read(&path, &key, None).unwrap();
         assert_eq!(back.mnemonic, "phrase goes here");
-        assert_eq!(back.buckets.len(), 1);
-        assert_eq!(back.buckets[0].balance_minor, "125000");
 
         // A different keychain key must not open it.
         assert!(read(&path, &VaultKey::random(), None).is_err());
@@ -219,8 +199,34 @@ mod tests {
     fn sample() -> VaultPayload {
         VaultPayload {
             mnemonic: "the reference phrase".into(),
-            buckets: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_vault_from_before_buckets_were_removed_still_opens() {
+        // Exactly what older builds wrote: the mnemonic plus a bucket list,
+        // usually empty but not always. It has to keep decrypting to the same
+        // seed, or upgrading would lock people out of their wallets.
+        let dir = dir_named("legacy");
+        let path = dir.join("wallet.vault");
+        let key = VaultKey::random();
+
+        for old in [
+            r#"{"mnemonic":"the reference phrase","buckets":[]}"#,
+            r#"{"mnemonic":"the reference phrase","buckets":[{"id":"b1","name":"Rent","asset":"BTC","balanceMinor":"125000","addressCount":2}]}"#,
+        ] {
+            let sealed = key.seal(old.as_bytes()).unwrap();
+            let mut blob = MAGIC_V2.to_vec();
+            blob.push(0);
+            blob.extend_from_slice(&[0u8; SALT_LEN]);
+            blob.extend_from_slice(&sealed);
+            fs::write(&path, &blob).unwrap();
+
+            let back = read(&path, &key, None).unwrap();
+            assert_eq!(back.mnemonic, "the reference phrase");
+        }
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

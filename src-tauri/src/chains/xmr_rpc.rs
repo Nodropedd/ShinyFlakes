@@ -23,7 +23,7 @@ pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:18082/json_rpc";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http_client::builder()
         .timeout(TIMEOUT)
         .build()
         .map_err(|e| WalletError::Network(e.to_string()))

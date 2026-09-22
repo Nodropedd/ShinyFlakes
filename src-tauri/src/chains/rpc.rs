@@ -101,7 +101,7 @@ impl AssetBalance {
 /// endpoint sees a Tor exit rather than this machine. When it is off, they go
 /// out directly. Tor is checked per call, so the toggle takes effect at once.
 pub fn client() -> Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
+    let mut builder = crate::http_client::builder()
         .timeout(TIMEOUT)
         // Deliberately generic. Announcing the wallet by name in every request
         // would hand the endpoint operator an easy fingerprint.
@@ -118,9 +118,11 @@ pub fn client() -> Result<reqwest::Client> {
 ///
 /// Used to fetch Tor itself, since the proxy cannot carry the download that
 /// installs it, and for the local Monero download where a large transfer over
-/// Tor would be needlessly slow.
+/// Tor would be needlessly slow. Android downloads neither — both come inside
+/// the APK — so it has no use there.
+#[cfg(not(target_os = "android"))]
 pub fn plain_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::http_client::builder()
         .timeout(std::time::Duration::from_secs(900))
         .user_agent("Mozilla/5.0")
         .build()

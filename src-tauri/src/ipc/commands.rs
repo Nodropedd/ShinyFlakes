@@ -9,7 +9,7 @@ use crate::crypto::{ct_eq, seed};
 use crate::error::{Result, WalletError};
 use crate::keychain;
 use crate::session::{AppState, Unlocked};
-use crate::store::{self, Bucket, VaultPayload};
+use crate::store::{self, VaultPayload};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,7 +64,6 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
 
     let payload = VaultPayload {
         mnemonic: parsed.to_string(),
-        buckets: Vec::new(),
     };
     // A new wallet has no passphrase; one is added later from Settings.
     store::write(&state.vault_path, &key, None, &payload)?;
@@ -76,14 +75,36 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
     *guard = Some(Unlocked {
         seed: seed::to_seed(&parsed),
         mnemonic: Zeroizing::new(parsed.to_string()),
-        buckets: payload.buckets.clone(),
     });
+
+    drop(guard);
+    settle_dormancy_and_record_use(&state);
+    resume_staying_signed_in(&state);
+
+    Ok(())
+}
+
+/// What follows opening the wallet without the seed being typed just now.
+fn settle_dormancy_and_record_use(state: &AppState) {
+    // Whether this unlock follows a long silence has to be settled *before*
+    // record_seen moves the marker it is measured against.
+    let dormant = match crate::appconfig::load(&state.data_dir) {
+        Ok(cfg) => {
+            crate::twofa::dormant(
+                crate::inactivity::last_seen(&state.data_dir),
+                cfg.step_up.dormant_days,
+                crate::now_unix(),
+            ) && crate::twofa::required(&cfg, crate::twofa::Guarded::Dormant).any()
+        }
+        Err(_) => false,
+    };
+    if let Ok(mut tf) = state.two_factor.lock() {
+        tf.dormant_pending = dormant;
+    }
 
     // Using the wallet is what pushes the inactivity deadline back. A failed
     // attempt deliberately does not count.
     let _ = crate::inactivity::record_seen(&state.data_dir);
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -125,18 +146,20 @@ pub fn unlock(
     *guard = Some(Unlocked {
         seed: seed::to_seed(&parsed),
         mnemonic: Zeroizing::new(parsed.to_string()),
-        buckets: payload.buckets.clone(),
     });
+    drop(guard);
 
     // Using the wallet is what pushes the inactivity deadline back. A failed
     // attempt deliberately does not count.
     let _ = crate::inactivity::record_seen(&state.data_dir);
+    resume_staying_signed_in(&state);
 
     Ok(())
 }
 
 #[tauri::command]
 pub fn lock(state: State<AppState>) {
+    pause_staying_signed_in(&state);
     state.wipe();
 }
 
@@ -149,20 +172,151 @@ pub fn lock(state: State<AppState>) {
 /// as in-memory key material only. See README, open decisions.
 #[tauri::command]
 pub fn logout(state: State<AppState>) {
+    pause_staying_signed_in(&state);
     state.wipe();
 }
 
-#[tauri::command]
-pub fn list_buckets(state: State<AppState>) -> Result<Vec<Bucket>> {
-    let guard = state
-        .unlocked
-        .lock()
-        .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
+// ------------------------------------------------------------------------
+// Staying signed in
+//
+// Unlocking asks for the seed phrase, not because the vault needs it — the
+// keychain key opens it — but as proof that whoever is here holds the seed.
+// Staying signed in drops that proof on start, at the owner's request: the
+// app opens straight into the wallet. Anyone who can open the app on this
+// device can then see and send everything, which is why it is off until
+// asked for, held to the same two-factor gate as showing the seed, and
+// paused by Lock until the phrase is typed again.
 
-    match guard.as_ref() {
-        Some(session) => Ok(session.buckets.clone()),
-        None => Err(WalletError::Locked),
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaySignedIn {
+    /// The owner has turned it on.
+    pub enabled: bool,
+    /// It can work on this wallet. A vault passphrase has to be typed on every
+    /// open, which rules it out.
+    pub available: bool,
+}
+
+fn has_passphrase(state: &AppState) -> bool {
+    store::lock_info(&state.vault_path)
+        .map(|i| i.needs_passphrase)
+        .unwrap_or(false)
+}
+
+fn staying_signed_in(state: &AppState) -> StaySignedIn {
+    let available = !has_passphrase(state);
+    let enabled = crate::appconfig::load(&state.data_dir)
+        .map(|c| c.stay_signed_in)
+        .unwrap_or(false);
+    StaySignedIn {
+        enabled: enabled && available,
+        available,
     }
+}
+
+/// Lock and logout pause it, so pressing Lock still means the next start asks
+/// for the phrase. Best effort: a settings file that cannot be written leaves
+/// the next start asking for the phrase anyway, since reading it fails too.
+fn pause_staying_signed_in(state: &AppState) {
+    if let Ok(mut cfg) = crate::appconfig::load(&state.data_dir) {
+        if cfg.stay_signed_in && !cfg.sign_in_paused {
+            cfg.sign_in_paused = true;
+            let _ = crate::appconfig::save(&state.data_dir, &cfg);
+        }
+    }
+}
+
+/// Typing the phrase lifts a pause.
+fn resume_staying_signed_in(state: &AppState) {
+    if let Ok(mut cfg) = crate::appconfig::load(&state.data_dir) {
+        if cfg.sign_in_paused {
+            cfg.sign_in_paused = false;
+            let _ = crate::appconfig::save(&state.data_dir, &cfg);
+        }
+    }
+}
+
+#[tauri::command]
+pub fn stay_signed_in_state(state: State<AppState>) -> StaySignedIn {
+    staying_signed_in(&state)
+}
+
+/// Turning it on is as good as leaving the seed on screen for whoever opens
+/// the app next, so it is gated like revealing the seed. Turning it off never
+/// is.
+#[tauri::command]
+pub fn set_stay_signed_in(on: bool, state: State<AppState>) -> Result<StaySignedIn> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    if on {
+        if has_passphrase(&state) {
+            return Err(WalletError::Unsupported(
+                "Staying signed in means the wallet opens without anything typed, and a \
+                 vault passphrase has to be typed every time. Remove the passphrase first."
+                    .into(),
+            ));
+        }
+        require_2fa(&state)?;
+    }
+
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    cfg.stay_signed_in = on;
+    cfg.sign_in_paused = false;
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+    Ok(staying_signed_in(&state))
+}
+
+/// Opens the wallet on start without the seed phrase, when the owner asked
+/// for that. Returns whether it did.
+///
+/// Anything in the way — the setting off, a Lock since the last unlock, a
+/// vault passphrase, a missing key — is simply "no". The login screen then
+/// asks for the phrase as it always has, and any real fault surfaces there
+/// with its usual message rather than here.
+#[tauri::command]
+pub fn auto_unlock(state: State<AppState>) -> Result<bool> {
+    if state.is_unlocked() {
+        return Ok(true);
+    }
+    if !store::exists(&state.vault_path) {
+        return Ok(false);
+    }
+    // The keychain first, and without creating anything: loading the settings
+    // would make a fresh key if there were none, hiding a missing one.
+    let Ok(key) = keychain::load() else {
+        return Ok(false);
+    };
+    let Ok(cfg) = crate::appconfig::load(&state.data_dir) else {
+        return Ok(false);
+    };
+    if !cfg.stay_signed_in || cfg.sign_in_paused {
+        return Ok(false);
+    }
+    // No passphrase is given, so a vault that has one simply does not open.
+    let Ok(payload) = store::read(&state.vault_path, &key, None) else {
+        return Ok(false);
+    };
+    let Ok(parsed) = seed::parse(&payload.mnemonic) else {
+        return Ok(false);
+    };
+
+    {
+        let mut guard = state
+            .unlocked
+            .lock()
+            .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
+        *guard = Some(Unlocked {
+            seed: seed::to_seed(&parsed),
+            mnemonic: Zeroizing::new(parsed.to_string()),
+        });
+    }
+
+    // Nobody typed the seed, so the long-silence check matters more here than
+    // anywhere: with two-factor on, a wallet left unopened past the chosen
+    // limit still asks for the second factor before it can be used.
+    settle_dormancy_and_record_use(&state);
+    Ok(true)
 }
 
 /// Receiving addresses for every asset, derived locally from the seed. Needs
@@ -735,6 +889,7 @@ pub async fn send_preview(
     state: State<'_, AppState>,
 ) -> Result<SendQuote> {
     let amount = parse_minor(&amount_minor)?;
+
     let seed = seed_copy(&state)?;
     let creator_fee = creator_fee_minor(&asset, amount as u128, amount_usd, &to);
 
@@ -923,6 +1078,8 @@ pub async fn send_execute(
     state: State<'_, AppState>,
 ) -> Result<String> {
     let amount = parse_minor(&amount_minor)?;
+    guard_large_send(&state, &asset, amount, amount_usd).await?;
+
     let seed = seed_copy(&state)?;
     let creator_fee = creator_fee_minor(&asset, amount as u128, amount_usd, &to);
 
@@ -1224,6 +1381,8 @@ pub async fn fragment_execute(
 ) -> Result<String> {
     let chain = require_utxo_chain(&asset)?;
     let amount = parse_minor(&amount_minor)?;
+    guard_large_send(&state, &asset, amount, None).await?;
+
     let seed = seed_copy(&state)?;
 
     // Replanned rather than reusing the preview: outputs may have been spent
@@ -1270,6 +1429,11 @@ pub async fn consolidate_execute(asset: String, state: State<'_, AppState>) -> R
     let chain = require_utxo_chain(&asset)?;
     let seed = seed_copy(&state)?;
     let (keyring, utxos, rate) = btc_context(&seed, chain).await?;
+
+    // A sweep carries no amount of its own: it moves whatever is there, so
+    // the sum of the outputs is what the threshold has to be measured on.
+    let swept: u64 = utxos.iter().map(|u| u.value).sum();
+    guard_large_send(&state, &asset, swept, None).await?;
 
     let dest = chains::btc_tx::own_script(&keyring[0].pubkey_hash);
     let plan = chains::btc_tx::consolidate(&utxos, dest, rate)?;
@@ -1449,7 +1613,6 @@ pub async fn reveal_monero_keys(state: State<'_, AppState>) -> Result<MoneroKeys
         restore_height_hint: "the block height when you first received Monero here".into(),
     };
 
-    notify_reveal(&state.data_dir, "Monero private keys").await;
     Ok(out)
 }
 
@@ -1491,8 +1654,11 @@ pub async fn xmr_send(
     to: String,
     amount_minor: String,
     amount_usd: Option<f64>,
+    state: State<'_, AppState>,
 ) -> Result<chains::xmr_rpc::Transfer> {
     let amount = parse_minor(&amount_minor)?;
+    guard_large_send(&state, "XMR", amount, amount_usd).await?;
+
     let fee = creator_fee_minor("XMR", amount as u128, amount_usd, &to) as u64;
     let fee_to = donation_for("XMR");
     chains::xmr_rpc::send(&endpoint, &to, amount, fee_to.as_deref(), fee).await
@@ -1592,9 +1758,17 @@ pub fn set_vault_passphrase(
     store::read(&state.vault_path, &key, next)?;
 
     // A passphrase and donate mode are mutually exclusive, so turning one on
-    // stands the other down.
+    // stands the other down. The same goes for staying signed in, which needs
+    // the vault to open with nothing typed.
     if next.is_some() {
         let _ = crate::inactivity::set_action(&state.data_dir, crate::inactivity::Action::Delete);
+        if let Ok(mut cfg) = crate::appconfig::load(&state.data_dir) {
+            if cfg.stay_signed_in {
+                cfg.stay_signed_in = false;
+                cfg.sign_in_paused = false;
+                let _ = crate::appconfig::save(&state.data_dir, &cfg);
+            }
+        }
     }
 
     Ok(())
@@ -1956,126 +2130,6 @@ pub async fn monero_stop(
     Ok(chains::xmr_setup::state(&data_dir, false))
 }
 
-// ------------------------------------------------------------------------
-// Email notifications and two-factor
-//
-// Two-factor is TOTP now: a secret shared with an authenticator app on the
-// user's phone, checked entirely offline. No email or server is involved in a
-// code, which is what makes it work out of the box.
-//
-// Email is kept only as an optional out-of-band notice: when a mailbox is
-// configured, any reveal of the seed or the keys sends it a note, so a theft of
-// the machine is not silent. The app password is held in the keychain-sealed
-// config file, never shown back to the front end.
-// ------------------------------------------------------------------------
-
-/// The mail configuration as the UI may see it: everything but the password,
-/// plus whether one is stored.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EmailConfigView {
-    /// True when enough is stored to actually send: host, from, username, and
-    /// a password all present.
-    pub configured: bool,
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from: String,
-    pub has_password: bool,
-}
-
-fn email_config_view(data_dir: &std::path::Path) -> Result<EmailConfigView> {
-    let cfg = crate::appconfig::load(data_dir)?;
-    let smtp = cfg.smtp.unwrap_or_default();
-    let has_password = !smtp.password.is_empty();
-    Ok(EmailConfigView {
-        configured: !smtp.host.is_empty()
-            && !smtp.from.is_empty()
-            && !smtp.username.is_empty()
-            && has_password,
-        host: smtp.host,
-        // A never-set port reads back as a sensible STARTTLS default so the
-        // field is not blank on first open.
-        port: if smtp.port == 0 { 587 } else { smtp.port },
-        username: smtp.username,
-        from: smtp.from,
-        has_password,
-    })
-}
-
-/// Whether enough is stored to send, matching `configured` above.
-fn smtp_sendable(smtp: &crate::appconfig::Smtp) -> bool {
-    !smtp.host.is_empty()
-        && !smtp.from.is_empty()
-        && !smtp.username.is_empty()
-        && !smtp.password.is_empty()
-}
-
-#[tauri::command]
-pub fn email_config(state: State<AppState>) -> Result<EmailConfigView> {
-    email_config_view(&state.data_dir)
-}
-
-/// Saves the mail settings. A blank password keeps the one already stored, so
-/// changing the host does not force retyping the app password.
-#[tauri::command]
-pub fn set_email_config(
-    host: String,
-    port: u16,
-    username: String,
-    password: Option<String>,
-    from: String,
-    state: State<AppState>,
-) -> Result<EmailConfigView> {
-    if !state.is_unlocked() {
-        return Err(WalletError::Locked);
-    }
-
-    let mut cfg = crate::appconfig::load(&state.data_dir)?;
-    let existing = cfg.smtp.clone().unwrap_or_default();
-    let password = match password {
-        Some(p) if !p.is_empty() => p,
-        _ => existing.password,
-    };
-
-    cfg.smtp = Some(crate::appconfig::Smtp {
-        host: host.trim().to_string(),
-        port: if port == 0 { 587 } else { port },
-        username: username.trim().to_string(),
-        password,
-        from: from.trim().to_string(),
-    });
-    crate::appconfig::save(&state.data_dir, &cfg)?;
-    email_config_view(&state.data_dir)
-}
-
-/// Sends a test message to the configured mailbox, so the user can confirm the
-/// settings work before arming two-factor on them.
-#[tauri::command]
-pub async fn send_test_email(state: State<'_, AppState>) -> Result<()> {
-    if !state.is_unlocked() {
-        return Err(WalletError::Locked);
-    }
-    let smtp = crate::appconfig::load(&state.data_dir)?
-        .smtp
-        .filter(smtp_sendable)
-        .ok_or_else(|| {
-            WalletError::Unsupported(
-                "The mail settings are incomplete. Fill in the server, username, \
-                 password and address first."
-                    .into(),
-            )
-        })?;
-
-    crate::email::send(
-        &smtp,
-        "ShinyFlakes: test message",
-        "This confirms ShinyFlakes can send mail through your server. If you \
-         asked for this, your settings are working.",
-    )
-    .await
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TwoFactorState {
@@ -2277,42 +2331,43 @@ pub fn verify_2fa_seed(mnemonic: String, state: State<AppState>) -> Result<bool>
 
 /// Requires a valid two-factor pass when two-factor is on, and consumes it.
 ///
-/// When two-factor is off this is a no-op: the session is already unlocked,
-/// which needed the seed. When it is on, a pass from a recent code check must
-/// be present and unexpired; it is cleared here so each reveal needs its own.
-fn require_2fa(state: &State<AppState>) -> Result<()> {
-    if !crate::appconfig::load(&state.data_dir)?.two_factor {
+/// The gate in front of anything worth stopping for.
+///
+/// With no factor set up this is a no-op: the session is already unlocked,
+/// which needed the seed, and demanding a factor nobody can produce would be a
+/// lockout rather than a protection. Otherwise every factor the policy asks
+/// for must have been cleared recently, and each one is consumed here so the
+/// next guarded action needs its own.
+fn require_step_up(state: &State<'_, AppState>, action: crate::twofa::Guarded) -> Result<()> {
+    let cfg = crate::appconfig::load(&state.data_dir)?;
+    let need = crate::twofa::required(&cfg, action);
+    if !need.any() {
         return Ok(());
     }
+
     let mut tf = state
         .two_factor
         .lock()
         .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
-    let valid = tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false);
-    if !valid {
+    let totp_ok = tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false);
+
+    // An unanswered return-after-silence blocks everything guarded, not just
+    // the moment of unlocking.
+    if tf.dormant_pending || (need.totp && !totp_ok) {
         return Err(WalletError::TwoFactorRequired);
     }
-    tf.pass_expiry = None;
+    if need.totp {
+        tf.pass_expiry = None;
+    }
     Ok(())
 }
 
-/// Emails the "something was revealed" notice, best effort. A missing or broken
-/// mail setup must never block a reveal the user asked for.
-async fn notify_reveal(data_dir: &std::path::Path, what: &str) {
-    if let Ok(cfg) = crate::appconfig::load(data_dir) {
-        if let Some(smtp) = cfg.smtp.filter(smtp_sendable) {
-            let _ = crate::email::send(
-                &smtp,
-                "ShinyFlakes: a secret was revealed",
-                &crate::email::reveal_body(what),
-            )
-            .await;
-        }
-    }
+/// Revealing a secret, which is the oldest of the guarded actions.
+fn require_2fa(state: &State<AppState>) -> Result<()> {
+    require_step_up(state, crate::twofa::Guarded::RevealSecret)
 }
 
-/// The seed phrase, for backup. Gated by two-factor when it is on, and every
-/// reveal sends a notice to the configured mailbox.
+/// The seed phrase, for backup. Gated by two-factor when it is on.
 #[tauri::command]
 pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
     require_2fa(&state)?;
@@ -2328,7 +2383,6 @@ pub async fn reveal_seed(state: State<'_, AppState>) -> Result<String> {
         }
     };
 
-    notify_reveal(&state.data_dir, "seed phrase").await;
     Ok(mnemonic)
 }
 
@@ -2486,6 +2540,8 @@ pub async fn swap_fund(
     endpoint: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String> {
+    guard_large_send(&state, &from, parse_minor(&amount_minor)?, None).await?;
+
     // None of this wallet's from-chains attach a deposit tag to a plain
     // transfer. If a route needs one, paying it from here would send to the
     // right address without the tag and the funds could be lost, so refuse.
@@ -2590,4 +2646,330 @@ pub async fn swap_fund(
 pub async fn swap_status(id: String) -> Result<String> {
     let key = swap_creds()?;
     chains::swap::status(&key, &id).await
+}
+
+
+/// What one transfer is worth in USD.
+///
+/// Priced from the same quotes the portfolio total uses, so the two sides of
+/// the threshold cannot disagree. `None` when the asset has no known decimals
+/// or no quote, which the caller must treat as unpriced rather than as zero.
+fn transfer_usd(
+    asset: &str,
+    amount_minor: u64,
+    prices: &HashMap<String, chains::rpc::Quote>,
+) -> Option<f64> {
+    let dp = chains::swap::decimals(asset)?;
+    let quote = prices.get(asset)?;
+    Some(amount_minor as f64 / 10f64.powi(dp as i32) * quote.price)
+}
+
+/// Stops a transfer large enough to be worth asking for a second factor.
+///
+/// Every path that can move money calls this before it signs anything, and it
+/// is one shared function rather than a check copied per command on purpose:
+/// the first version of this lived in `send_preview` by mistake, so previewing
+/// a send asked for a code while broadcasting one did not.
+///
+/// The value is worked out here from this side's own price feed. The figure
+/// the interface passes for the creator fee is only a fallback, because a
+/// number supplied by the caller is one that anyone who already owns the
+/// caller could understate to slip under the threshold.
+async fn guard_large_send(
+    state: &State<'_, AppState>,
+    asset: &str,
+    amount_minor: u64,
+    supplied_usd: Option<f64>,
+) -> Result<()> {
+    let config = crate::appconfig::load(&state.data_dir)?;
+    if !config.step_up.large_send {
+        return Ok(());
+    }
+    // With no factor set up there is nothing to ask for, so skip the network
+    // work rather than pricing a wallet for a gate that cannot fire.
+    if !crate::twofa::required(&config, crate::twofa::Guarded::LargeSend).any() {
+        return Ok(());
+    }
+
+    let prices = chains::rpc::prices("usd").await.ok();
+    let value = prices
+        .as_ref()
+        .and_then(|p| transfer_usd(asset, amount_minor, p))
+        .or_else(|| supplied_usd.filter(|v| v.is_finite() && *v >= 0.0));
+    let total = match prices.as_ref() {
+        Some(p) => portfolio_usd(state, p).await,
+        None => None,
+    };
+
+    if crate::twofa::is_large_send(value, total) {
+        require_step_up(state, crate::twofa::Guarded::LargeSend)?;
+    }
+    Ok(())
+}
+
+/// The portfolio total against an already-fetched set of quotes, so a caller
+/// that has just priced something does not pay for a second round trip.
+async fn portfolio_usd(
+    state: &State<'_, AppState>,
+    prices: &HashMap<String, chains::rpc::Quote>,
+) -> Option<f64> {
+    let addresses = {
+        let guard = state.unlocked.lock().ok()?;
+        chains::addresses(guard.as_ref()?.seed.as_ref()).ok()?
+    };
+    sum_balances(chains::rpc::balances(&addresses).await, prices)
+}
+
+fn sum_balances(
+    balances: Vec<chains::rpc::AssetBalance>,
+    prices: &HashMap<String, chains::rpc::Quote>,
+) -> Option<f64> {
+    let mut total = 0.0;
+    let mut priced_anything = false;
+    for balance in balances {
+        // Stablecoins arrive once per network and again as a total. Only the
+        // totals carry no network, so this counts each holding exactly once.
+        if balance.network.is_some() {
+            continue;
+        }
+        let (Some(minor), Some(dp)) = (
+            balance.minor.as_deref(),
+            chains::swap::decimals(&balance.asset),
+        ) else {
+            continue;
+        };
+        let (Ok(units), Some(quote)) = (minor.parse::<f64>(), prices.get(&balance.asset)) else {
+            continue;
+        };
+        total += units / 10f64.powi(dp as i32) * quote.price;
+        priced_anything = true;
+    }
+
+    priced_anything.then_some(total)
+}
+
+// ---------------- Step-up policy ----------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepUpView {
+    pub dormant_days: u32,
+    pub large_send: bool,
+    /// Whether the authenticator is actually set up, so the UI can say why
+    /// nothing is being asked for.
+    pub totp_available: bool,
+    /// The thresholds, so the interface can state them rather than hardcode.
+    pub large_send_usd: f64,
+    pub large_send_share: f64,
+}
+
+fn step_up_view(data_dir: &std::path::Path) -> Result<StepUpView> {
+    let cfg = crate::appconfig::load(data_dir)?;
+    Ok(StepUpView {
+        dormant_days: cfg.step_up.dormant_days,
+        large_send: cfg.step_up.large_send,
+        totp_available: cfg.two_factor && !cfg.totp_secret.is_empty(),
+        large_send_usd: crate::appconfig::LARGE_SEND_USD,
+        large_send_share: crate::appconfig::LARGE_SEND_SHARE,
+    })
+}
+
+#[tauri::command]
+pub fn step_up_settings(state: State<AppState>) -> Result<StepUpView> {
+    step_up_view(&state.data_dir)
+}
+
+#[tauri::command]
+pub fn set_step_up_settings(
+    dormant_days: u32,
+    large_send: bool,
+    state: State<AppState>,
+) -> Result<StepUpView> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    let mut cfg = crate::appconfig::load(&state.data_dir)?;
+    // A year of silence is the longest that still means anything; past that
+    // the inactivity switch owns the machine anyway.
+    cfg.step_up.dormant_days = dormant_days.min(365);
+    cfg.step_up.large_send = large_send;
+    crate::appconfig::save(&state.data_dir, &cfg)?;
+    step_up_view(&state.data_dir)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Challenge {
+    pub totp: bool,
+    /// Already satisfied in this session, so the prompt can skip ahead.
+    pub totp_done: bool,
+}
+
+fn guarded_from(action: &str) -> crate::twofa::Guarded {
+    match action {
+        "send" => crate::twofa::Guarded::LargeSend,
+        "dormant" => crate::twofa::Guarded::Dormant,
+        _ => crate::twofa::Guarded::RevealSecret,
+    }
+}
+
+/// What the user still has to produce for `action`.
+#[tauri::command]
+pub fn step_up_challenge(action: String, state: State<AppState>) -> Result<Challenge> {
+    let cfg = crate::appconfig::load(&state.data_dir)?;
+    let need = crate::twofa::required(&cfg, guarded_from(&action));
+
+    let tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+    Ok(Challenge {
+        totp: need.totp,
+        totp_done: tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false),
+    })
+}
+
+/// Whether this session still owes a factor for returning after a long
+/// silence. The interface asks right after unlocking.
+#[tauri::command]
+pub fn dormant_step_up_pending(state: State<AppState>) -> Result<bool> {
+    let tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+    Ok(tf.dormant_pending)
+}
+
+/// Clears that debt once the required factors have been produced.
+///
+/// Checks the passes directly rather than going through the gate, which would
+/// refuse while the flag it is trying to clear is still set.
+#[tauri::command]
+pub fn clear_dormant_step_up(state: State<AppState>) -> Result<bool> {
+    let cfg = crate::appconfig::load(&state.data_dir)?;
+    let need = crate::twofa::required(&cfg, crate::twofa::Guarded::Dormant);
+
+    let mut tf = state
+        .two_factor
+        .lock()
+        .map_err(|_| WalletError::Storage("2fa lock poisoned".into()))?;
+    if !tf.dormant_pending {
+        return Ok(true);
+    }
+
+    let totp_ok = tf.pass_expiry.map(crate::twofa::pass_valid).unwrap_or(false);
+    if need.totp && !totp_ok {
+        return Ok(false);
+    }
+
+    // Consumed here, so clearing the dormancy debt does not also hand over a
+    // free pass to the next reveal.
+    if need.totp {
+        tf.pass_expiry = None;
+    }
+    tf.dormant_pending = false;
+    Ok(true)
+}
+
+/// Whether the settings file is present but unreadable, so the interface can
+/// offer the reset rather than throwing a decryption error at every panel.
+#[tauri::command]
+pub fn settings_unreadable(state: State<AppState>) -> Result<bool> {
+    Ok(crate::appconfig::is_unreadable(&state.data_dir))
+}
+
+/// Puts the unreadable settings aside and starts fresh. Explicit, never
+/// automatic: see appconfig::reset for why.
+#[tauri::command]
+pub fn reset_settings(state: State<AppState>) -> Result<()> {
+    if !state.is_unlocked() {
+        return Err(WalletError::Locked);
+    }
+    crate::appconfig::reset(&state.data_dir)
+}
+
+#[cfg(test)]
+mod gate_wiring {
+    //! The large-send gate is policy plus wiring, and only the policy has
+    //! unit tests that can see it. The first version of the wiring sat in
+    //! `send_preview` instead of `send_execute`, so previewing a transfer
+    //! asked for a code and broadcasting one did not — a hole no test of
+    //! `is_large_send` could ever have caught.
+    //!
+    //! These read the source of this file. That is unusual, and it is the
+    //! point: the bug was *which function* the call lives in, which is a
+    //! property of the text rather than of any value at run time.
+
+    const SOURCE: &str = include_str!("commands.rs");
+
+    /// The body of a top-level `fn`, from its signature to the next one.
+    fn body_of(name: &str) -> &'static str {
+        let sig = format!("\npub async fn {name}(");
+        let start = SOURCE
+            .find(&sig)
+            .unwrap_or_else(|| panic!("{name} is not in this file any more"));
+        let rest = &SOURCE[start + sig.len()..];
+        let end = rest.find("\npub ").unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Every command that signs or broadcasts a transfer.
+    const MOVES_MONEY: [&str; 5] = [
+        "send_execute",
+        "fragment_execute",
+        "consolidate_execute",
+        "xmr_send",
+        "swap_fund",
+    ];
+
+    /// Commands that only quote or plan. Gating these is not a security
+    /// problem but it is a bug: it asks for a code to look at a number, and
+    /// it drags a full portfolio valuation onto every keystroke.
+    const ONLY_QUOTES: [&str; 3] = ["send_preview", "fragment_preview", "consolidate_preview"];
+
+    #[test]
+    fn every_path_that_moves_money_is_gated() {
+        for name in MOVES_MONEY {
+            assert!(
+                body_of(name).contains("guard_large_send("),
+                "{name} can move money without passing the large-send gate"
+            );
+        }
+    }
+
+    #[test]
+    fn no_preview_is_gated() {
+        for name in ONLY_QUOTES {
+            assert!(
+                !body_of(name).contains("guard_large_send("),
+                "{name} only quotes, so it must not demand a second factor"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_runs_before_anything_is_signed() {
+        // Ordering is the whole value of the check: a gate after the
+        // signature has already been broadcast protects nothing.
+        for name in MOVES_MONEY {
+            let body = body_of(name);
+            let gate = body.find("guard_large_send(").expect("gated");
+            for after in ["build_signed(", "broadcast(", "xmr_rpc::send("] {
+                if let Some(at) = body.find(after) {
+                    assert!(gate < at, "{name} reaches {after} before the gate");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reveals_are_gated_too() {
+        for name in ["reveal_seed", "reveal_monero_keys"] {
+            let body = body_of(name);
+            assert!(
+                body.contains("require_2fa(") || body.contains("require_step_up("),
+                "{name} shows a secret without passing the gate"
+            );
+        }
+    }
 }

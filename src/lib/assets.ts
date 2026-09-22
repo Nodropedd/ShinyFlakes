@@ -13,7 +13,7 @@ import btcLogo from "../assets/coins/btc.svg";
 import ltcLogo from "../assets/coins/ltc.svg";
 // Monero ships its mark as artwork rather than a path set, so the official
 // file is used directly. It is the current two-tone version.
-import xmrLogo from "../assets/coins/xmr.png";
+import xmrLogo from "../assets/coins/xmr.svg";
 import ethLogo from "../assets/coins/eth.svg";
 import solLogo from "../assets/coins/sol.svg";
 import trxLogo from "../assets/coins/trx.svg";
@@ -30,7 +30,7 @@ export interface AssetMeta {
   /** Decimal places between the smallest unit and one whole coin. */
   decimals: number;
   /** True for real UTXO chains, which are the only ones with a fragmentation
-   *  view and per-output bucket tagging. */
+   *  view. */
   utxo: boolean;
   /** CSS custom property holding this asset's accent. */
   accent: string;

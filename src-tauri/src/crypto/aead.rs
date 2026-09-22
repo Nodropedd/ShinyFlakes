@@ -9,7 +9,7 @@ pub const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
 /// AES-256-GCM key for everything stored locally: the seed, SMTP credentials,
-/// bucket metadata, settings. Held only for the duration of a single vault
+/// settings. Held only for the duration of a single vault
 /// read or write, then dropped and zeroed.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKey([u8; KEY_LEN]);
@@ -72,15 +72,15 @@ mod tests {
     #[test]
     fn round_trips() {
         let key = VaultKey::random();
-        let sealed = key.seal(b"bucket metadata").unwrap();
-        assert_eq!(&sealed[NONCE_LEN..].len(), &(b"bucket metadata".len() + 16));
-        assert_eq!(&key.open(&sealed).unwrap()[..], b"bucket metadata");
+        let sealed = key.seal(b"vault contents").unwrap();
+        assert_eq!(&sealed[NONCE_LEN..].len(), &(b"vault contents".len() + 16));
+        assert_eq!(&key.open(&sealed).unwrap()[..], b"vault contents");
     }
 
     #[test]
     fn rejects_tampering() {
         let key = VaultKey::random();
-        let mut sealed = key.seal(b"bucket metadata").unwrap();
+        let mut sealed = key.seal(b"vault contents").unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 1;
         assert!(key.open(&sealed).is_err());
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn rejects_a_different_key() {
-        let sealed = VaultKey::random().seal(b"bucket metadata").unwrap();
+        let sealed = VaultKey::random().seal(b"vault contents").unwrap();
         assert!(VaultKey::random().open(&sealed).is_err());
     }
 }

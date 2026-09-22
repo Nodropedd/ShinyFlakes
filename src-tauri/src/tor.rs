@@ -9,24 +9,46 @@
 //! The official Tor is downloaded, verified against a hash compiled into this
 //! program, and run locally. Requests then go through its SOCKS proxy. As with
 //! Monero, the cryptography and the network stack stay with the project that
-//! maintains them.
+//! maintains them. On Android the same official build arrives inside the APK
+//! instead of being downloaded, because Android will not run a downloaded
+//! program; see `crate::bundled`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+#[cfg(not(target_os = "android"))]
 use sha2::{Digest, Sha256};
 
 use crate::error::{Result, WalletError};
 
 const VERSION: &str = "15.0.22";
+
+/// The expert bundle is published once per platform, so the URL, the checksum
+/// and the name of the binary inside it all differ by target.
+#[cfg(windows)]
 const URL: &str = "https://archive.torproject.org/tor-package-archive/torbrowser/15.0.22/tor-expert-bundle-windows-x86_64-15.0.22.tar.gz";
+#[cfg(target_os = "linux")]
+const URL: &str = "https://archive.torproject.org/tor-package-archive/torbrowser/15.0.22/tor-expert-bundle-linux-x86_64-15.0.22.tar.gz";
 
 /// Published by the Tor Project and checked against the real download before
 /// being written here. A hash in the binary proves the exact build; a fetched
 /// checksum would only prove the file matches a list from the same server.
+#[cfg(windows)]
 const SHA256: &str = "231dad6b9cb401a54c260db7046965ef04e4f72ff071b140d423fb5da281ab1e";
+#[cfg(target_os = "linux")]
+const SHA256: &str = "08d49de27f542b8f73e2014e064d8320562b5d20019c03d4725c5a5249d97985";
+
+/// Name of the tor executable inside the bundle.
+#[cfg(windows)]
+const TOR_BIN: &str = "tor.exe";
+#[cfg(all(unix, not(target_os = "android")))]
+const TOR_BIN: &str = "tor";
+/// The name Tor's own Android build gives it, and the one it is packed into
+/// the APK under by `scripts/android-binaries.mjs`.
+#[cfg(target_os = "android")]
+const TOR_BIN: &str = "libtor.so";
 
 /// Where the local Tor listens. 9150 rather than 9050 so it does not clash
 /// with a system Tor or Tor Browser the user may already run.
@@ -70,8 +92,23 @@ fn install_dir(app_data: &Path) -> PathBuf {
     app_data.join("tor")
 }
 
+#[cfg(not(target_os = "android"))]
 fn binary(app_data: &Path) -> PathBuf {
-    install_dir(app_data).join("tor").join("tor.exe")
+    install_dir(app_data).join("tor").join(TOR_BIN)
+}
+
+/// The tor executable, if it is there to run.
+fn installed_binary(app_data: &Path) -> Option<PathBuf> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = app_data;
+        crate::bundled::executable(TOR_BIN)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let exe = binary(app_data);
+        exe.is_file().then_some(exe)
+    }
 }
 
 fn data_dir(app_data: &Path) -> PathBuf {
@@ -80,7 +117,7 @@ fn data_dir(app_data: &Path) -> PathBuf {
 
 pub fn state(app_data: &Path, running: bool) -> TorState {
     TorState {
-        installed: binary(app_data).is_file(),
+        installed: installed_binary(app_data).is_some(),
         running,
         routing: routing(),
         version: VERSION.to_string(),
@@ -91,7 +128,24 @@ fn oops(what: &str, e: impl std::fmt::Display) -> WalletError {
     WalletError::Network(format!("tor {what}: {e}"))
 }
 
-/// Downloads and verifies the Tor bundle, then unpacks tor.exe and its data.
+/// On Android there is nothing to fetch: Tor came inside the APK, checked
+/// against its pinned hash when the app was built.
+#[cfg(target_os = "android")]
+pub async fn install(app_data: &Path) -> Result<()> {
+    match installed_binary(app_data) {
+        Some(_) => Ok(()),
+        None => Err(WalletError::Unsupported(
+            "This copy of ShinyFlakes was built without Tor inside it, and Android does \
+             not let an app fetch a program afterwards. Build it with \
+             scripts/android-binaries.mjs in place."
+                .into(),
+        )),
+    }
+}
+
+/// Downloads and verifies the Tor bundle, then unpacks the tor binary and
+/// its data.
+#[cfg(not(target_os = "android"))]
 pub async fn install(app_data: &Path) -> Result<()> {
     if binary(app_data).is_file() {
         return Ok(());
@@ -140,18 +194,32 @@ pub async fn install(app_data: &Path) -> Result<()> {
         }
     }
 
-    if !binary(app_data).is_file() {
-        return Err(oops("unpack", "tor.exe was not in the archive"));
+    let exe = binary(app_data);
+    if !exe.is_file() {
+        return Err(oops(
+            "unpack",
+            format!("{TOR_BIN} was not in the archive"),
+        ));
     }
+
+    // The archive carries a mode, but nothing guarantees it survives the
+    // unpack, and a tor that is not executable fails later with a confusing
+    // "permission denied" at spawn time instead of here.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| oops("permissions", e))?;
+    }
+
     Ok(())
 }
 
 /// Starts Tor on the local SOCKS port.
 pub fn spawn(app_data: &Path) -> Result<Child> {
-    let exe = binary(app_data);
-    if !exe.is_file() {
+    let Some(exe) = installed_binary(app_data) else {
         return Err(oops("start", "Tor is not installed"));
-    }
+    };
     let state = data_dir(app_data);
     std::fs::create_dir_all(&state).map_err(|e| oops("state dir", e))?;
 
@@ -176,13 +244,39 @@ pub fn spawn(app_data: &Path) -> Result<Child> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    // The Linux bundle ships its own libevent and OpenSSL beside the binary
+    // but links them with no RPATH, so tor cannot start unless the loader is
+    // pointed at its own folder first.
+    #[cfg(all(unix, not(target_os = "android")))]
+    if let Some(lib_dir) = exe.parent() {
+        command.env("LD_LIBRARY_PATH", lib_dir);
+    }
+
+    // Android starts an app's processes in / with no HOME, and tor falls back
+    // on both for anything it is not given a path for. Point them at the
+    // app's own folder, the only place it may write.
+    //
+    // KISTLite: tor's default KIST scheduler asks the kernel how much each
+    // socket still has queued, and Android's SELinux policy refuses apps that
+    // ioctl. Tor then falls back on every scheduling pass and the refusal is
+    // logged each time. KISTLite is the same scheduler without the question,
+    // which is what was running anyway, minus the log flood.
+    #[cfg(target_os = "android")]
+    command
+        .arg("--Schedulers")
+        .arg("KISTLite,Vanilla")
+        .current_dir(&state)
+        .env("HOME", app_data);
+    #[cfg(target_os = "android")]
+    crate::bundled::keep_descriptors_private(&mut command);
+
     command.spawn().map_err(|e| oops("start", e))
 }
 
 /// A single quick check of whether the proxy already carries requests, so a
 /// Tor left running from an earlier launch is reused rather than duplicated.
 pub async fn proxy_alive() -> bool {
-    let Ok(client) = reqwest::Client::builder()
+    let Ok(client) = crate::http_client::builder()
         .proxy(match proxy() {
             Ok(p) => p,
             Err(_) => return false,
@@ -203,7 +297,7 @@ pub async fn proxy_alive() -> bool {
 /// Waits until Tor can actually carry a request, not merely until the port is
 /// open. Bootstrapping a circuit takes a few seconds to a minute.
 pub async fn wait_until_ready() -> Result<()> {
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::builder()
         .proxy(proxy()?)
         .timeout(std::time::Duration::from_secs(15))
         .build()
@@ -233,6 +327,7 @@ pub async fn wait_until_ready() -> Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn the_pinned_hash_is_a_sha256() {
         assert_eq!(SHA256.len(), 64);
@@ -255,10 +350,12 @@ mod tests {
         assert!(proxy().is_ok());
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn paths_stay_within_the_app_folder() {
-        let root = Path::new("C:/example/appdata");
+        let root = Path::new("/example/appdata");
         assert!(binary(root).starts_with(root));
         assert!(data_dir(root).starts_with(root));
     }
 }
+

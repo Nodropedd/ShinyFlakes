@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "android-binaries": "node scripts/android-binaries.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
