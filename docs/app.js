@@ -1,6 +1,7 @@
 // Two small jobs, both local: point the main button at the visitor's own
-// system, and fill in each file's size and SHA-256 from release.json, which
-// sits beside this page. Nothing is fetched from anywhere else.
+// system, and fill in each file's size, and the fingerprints in the verify
+// fold, from release.json beside this page. Nothing is fetched from anywhere
+// else.
 
 (() => {
   const platformOf = () => {
@@ -45,25 +46,27 @@
       if (version && release.version) {
         version.textContent = `Version ${release.version} · Free and open source`;
       }
+      const sums = document.getElementById("sums");
       for (const asset of release.assets || []) {
         const row = document.querySelector(`.file[data-asset="${CSS.escape(asset.name)}"]`);
-        if (!row) continue;
-        const size = row.querySelector(".f-size");
-        const sum = row.querySelector(".f-sum");
+        const size = row && row.querySelector(".f-size");
         if (size && asset.size) size.textContent = humanSize(asset.size);
-        if (sum && asset.sha256) {
-          sum.textContent = `SHA-256 ${asset.sha256}`;
+
+        if (sums && asset.sha256) {
+          const item = document.createElement("li");
+          const name = document.createElement("span");
+          const sum = document.createElement("code");
+          name.textContent = asset.name;
+          sum.textContent = asset.sha256;
           sum.title = "Click to copy";
           sum.addEventListener("click", () => {
             navigator.clipboard?.writeText(asset.sha256).then(() => {
-              sum.classList.add("copied");
               sum.textContent = "Copied";
-              setTimeout(() => {
-                sum.classList.remove("copied");
-                sum.textContent = `SHA-256 ${asset.sha256}`;
-              }, 1200);
+              setTimeout(() => (sum.textContent = asset.sha256), 1200);
             });
           });
+          item.append(name, sum);
+          sums.append(item);
         }
       }
     })

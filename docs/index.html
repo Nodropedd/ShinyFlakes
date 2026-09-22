@@ -20,7 +20,7 @@
       <nav aria-label="Sections">
         <a href="#download">Download</a>
         <a href="#features">Features</a>
-        <a href="#verify">Verify</a>
+        <a href="#faq">Questions</a>
         <a href="https://github.com/Nodropedd/ShinyFlakes">Source</a>
       </nav>
     </header>
@@ -115,10 +115,7 @@
 
       <section id="download" class="section">
         <h2>Download</h2>
-        <p class="sub">
-          Pick your system. Every file is listed with its SHA-256, so you can
-          check that what you downloaded is exactly what was published.
-        </p>
+        <p class="sub">Pick your system. The highlighted button is the one most people want.</p>
 
         <div class="platforms">
           <article class="platform card" id="android" data-platform="android">
@@ -133,7 +130,6 @@
                   <span class="f-runs">Android 7.0 or newer, any phone or tablet</span>
                 </div>
                 <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-android.apk">.apk <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
             </ul>
             <p class="how">
@@ -155,7 +151,6 @@
                   <span class="f-runs">Windows 10 and 11, 64-bit</span>
                 </div>
                 <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-windows-x64-setup.exe">.exe <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
               <li class="file" data-asset="ShinyFlakes-windows-x64-portable.exe">
                 <div class="f-main">
@@ -163,7 +158,6 @@
                   <span class="f-runs">The program on its own, nothing installed</span>
                 </div>
                 <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-windows-x64-portable.exe">.exe <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
             </ul>
             <p class="how">
@@ -185,7 +179,6 @@
                   <span class="f-runs">Any 64-bit distro from 2022 on. Needs FUSE 2.</span>
                 </div>
                 <a class="btn btn-primary f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-x86_64.AppImage">.AppImage <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
               <li class="file" data-asset="ShinyFlakes-linux-amd64.deb">
                 <div class="f-main">
@@ -193,7 +186,6 @@
                   <span class="f-runs">Ubuntu 22.04+, Debian 12+, Mint 21+</span>
                 </div>
                 <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-amd64.deb">.deb <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
               <li class="file" data-asset="ShinyFlakes-linux-x86_64.rpm">
                 <div class="f-main">
@@ -201,7 +193,6 @@
                   <span class="f-runs">Fedora 36+, openSUSE Tumbleweed</span>
                 </div>
                 <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-linux-x86_64.rpm">.rpm <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
               <li class="file" data-asset="ShinyFlakes-arch-x86_64.pkg.tar.zst">
                 <div class="f-main">
@@ -209,7 +200,6 @@
                   <span class="f-runs">Uses the system's WebKitGTK, so it is small</span>
                 </div>
                 <a class="btn f-dl" href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/ShinyFlakes-arch-x86_64.pkg.tar.zst">.pkg.tar.zst <span class="f-size"></span></a>
-                <code class="f-sum" title="SHA-256"></code>
               </li>
             </ul>
             <div class="how">
@@ -225,23 +215,8 @@ sudo pacman -U ShinyFlakes-arch-x86_64.pkg.tar.zst</code></pre>
             </div>
           </article>
 
-          <article class="platform card soon" id="apple" data-platform="apple">
-            <header>
-              <svg viewBox="0 0 24 24" class="p-icon"><path d="M5 6h14v9H5zM3 18h18M10 18l.5-1.5h3L14 18" /></svg>
-              <h3>Mac and iPhone</h3>
-            </header>
-            <p class="how">
-              Not available yet. Building for Apple devices needs an Apple
-              computer to build on, and for iPhone an Apple developer account.
-            </p>
-          </article>
         </div>
 
-        <p class="sums-link">
-          All checksums in one file:
-          <a href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
-          <noscript> — this page fills them in beside each file when scripts are on.</noscript>
-        </p>
       </section>
 
       <section id="features" class="section">
@@ -297,26 +272,37 @@ sudo pacman -U ShinyFlakes-arch-x86_64.pkg.tar.zst</code></pre>
         </div>
       </section>
 
-      <section id="verify" class="section">
-        <h2>Check a download</h2>
-        <p class="sub">
-          Compare the output with the SHA-256 shown beside the file above. If it
-          differs by even one character, do not install it.
-        </p>
-        <div class="verify">
-          <div class="card">
-            <h3>Linux</h3>
-            <pre><code>sha256sum ShinyFlakes-linux-x86_64.AppImage</code></pre>
+      <section id="verify" class="section quiet">
+        <details class="fold">
+          <summary>Verify your download (optional)</summary>
+          <p>
+            Every file has a fingerprint, its SHA-256. If a download was swapped
+            or damaged on the way to you, the fingerprint changes. Security
+            projects publish them because for a wallet a swapped download means
+            stolen coins. To check, run the command for your system on the file
+            you downloaded and compare the result with its line below. If it
+            differs at all, do not install it.
+          </p>
+          <ul class="sums" id="sums"></ul>
+          <div class="verify">
+            <div class="card">
+              <h3>Linux</h3>
+              <pre><code>sha256sum ShinyFlakes-linux-x86_64.AppImage</code></pre>
+            </div>
+            <div class="card">
+              <h3>Windows (PowerShell)</h3>
+              <pre><code>Get-FileHash .\ShinyFlakes-windows-x64-setup.exe</code></pre>
+            </div>
+            <div class="card">
+              <h3>macOS or any Unix</h3>
+              <pre><code>shasum -a 256 ShinyFlakes-android.apk</code></pre>
+            </div>
           </div>
-          <div class="card">
-            <h3>Windows (PowerShell)</h3>
-            <pre><code>Get-FileHash .\ShinyFlakes-windows-x64-setup.exe</code></pre>
-          </div>
-          <div class="card">
-            <h3>macOS or any Unix</h3>
-            <pre><code>shasum -a 256 ShinyFlakes-android.apk</code></pre>
-          </div>
-        </div>
+          <p>
+            All fingerprints in one file:
+            <a href="https://github.com/Nodropedd/ShinyFlakes/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
+          </p>
+        </details>
       </section>
 
       <section id="source" class="section">
@@ -327,16 +313,75 @@ sudo pacman -U ShinyFlakes-arch-x86_64.pkg.tar.zst</code></pre>
               The whole app is on GitHub. Built from source it works the same,
               with one exception: swaps are off, because the ChangeNOW partner
               key goes into the official downloads only and is not in the
-              repository. Android builds also need a signing key of your own.
+              repository. An Android build you make yourself also has to be
+              signed with your own key before a phone will install it.
             </p>
           </div>
           <a class="btn" href="https://github.com/Nodropedd/ShinyFlakes">View the source</a>
         </div>
       </section>
+
+      <section id="faq" class="section">
+        <h2>Questions</h2>
+
+        <details class="fold">
+          <summary>Can I build my own wallet from this code?</summary>
+          <p>
+            Yes, and you are welcome to. Two conditions: keep a visible
+            ShinyFlakes credit in the app itself, and link back to
+            <a href="https://github.com/Nodropedd/ShinyFlakes">this repository</a>
+            from wherever you publish it. Rename it, change it, ship it — just
+            do not pass the work off as having come from nowhere.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary>Why are swaps off in my own build?</summary>
+          <p>
+            Swaps go through ChangeNOW, which needs a partner key. That key
+            belongs to this project and is not in the repository, so a build
+            you make yourself has every other feature and a disabled swap
+            screen. Get your own key from ChangeNOW to turn it back on.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary>Is my seed phrase ever sent anywhere?</summary>
+          <p>
+            No. It is encrypted on your device with a key held by your
+            system's credential store, and there is no account and no server
+            to send it to. Balance and price lookups talk to public endpoints
+            using your addresses only, and Tor hides your IP from those.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary>Does the app update itself?</summary>
+          <p>
+            No. It tells you when a newer version is out and opens this page.
+            You download and install it yourself. An app that fetched and ran
+            its own updates would hand anyone who took over the release
+            account a way onto every user's machine.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary>Mac or iPhone?</summary>
+          <p>
+            No plans. Building for Apple devices requires Apple hardware, and
+            shipping to iPhone requires their approval.
+          </p>
+        </details>
+      </section>
     </main>
 
     <footer class="foot">
       <span class="wordmark small">ShinyFlakes</span>
+      <span class="copy">© 2026 ShinyFlakes. All rights reserved.</span>
+      <span>
+        Build on it if you like — keep the credit and link back to
+        <a href="https://github.com/Nodropedd/ShinyFlakes">the repository</a>.
+      </span>
       <span>Coin icons CC0. Pacifico by Vernon Adams under the SIL Open Font License.</span>
     </footer>
 

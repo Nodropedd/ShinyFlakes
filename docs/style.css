@@ -346,17 +346,6 @@ h3 { font-size: 16px; font-weight: 650; }
 .f-dl { padding: 8px 13px; font-size: 13px; }
 .f-size { font-weight: 500; opacity: 0.75; }
 .f-size:empty { display: none; }
-.f-sum {
-  grid-column: 1 / -1;
-  display: block;
-  overflow-wrap: anywhere;
-  color: var(--text-faint);
-  font-size: 11px;
-  line-height: 1.45;
-  cursor: copy;
-}
-.f-sum:empty { display: none; }
-.f-sum.copied { color: var(--ok); }
 
 .how { margin: 14px 0 0; color: var(--text-muted); font-size: 13.5px; }
 .how p { margin: 0 0 8px; }
@@ -381,7 +370,61 @@ pre {
   line-height: 1.6;
 }
 
-.sums-link { margin: 18px 0 0; color: var(--text-muted); font-size: 13.5px; }
+
+/* ---- verify fold ------------------------------------------------------ */
+
+.section.quiet { padding: 28px 0; }
+.fold summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  list-style-position: inside;
+}
+.fold summary:hover { color: var(--text); }
+
+/* ---- questions -------------------------------------------------------- */
+
+#faq h2 { margin-bottom: 20px; }
+#faq .fold {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+#faq .fold + .fold { margin-top: 10px; }
+#faq .fold summary { font-size: 14.5px; color: var(--text); }
+#faq .fold p { margin: 12px 0 2px; }
+
+.fold[open] summary { margin-bottom: 14px; color: var(--text); }
+.fold p { max-width: 46em; color: var(--text-muted); font-size: 13.5px; }
+.sums {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 16px 0;
+  padding: 0;
+  list-style: none;
+}
+.sums li {
+  display: grid;
+  grid-template-columns: minmax(0, 17em) minmax(0, 1fr);
+  gap: 4px 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  font-size: 12.5px;
+}
+.sums code {
+  overflow-wrap: anywhere;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  cursor: copy;
+}
+@media (max-width: 640px) {
+  .sums li { grid-template-columns: 1fr; }
+}
 
 /* ---- features --------------------------------------------------------- */
 

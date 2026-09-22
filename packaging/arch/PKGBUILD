@@ -10,8 +10,8 @@
 # makepkg needs base-devel (for fakeroot).
 
 pkgname=shinyflakes-bin
-pkgver=0.1.0
-pkgrel=3
+pkgver=0.1.1
+pkgrel=1
 pkgdesc="Privacy-focused multi-chain wallet"
 arch=('x86_64')
 # No licence file in the repository yet.
