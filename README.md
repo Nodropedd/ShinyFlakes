@@ -53,8 +53,10 @@ has a node simulate it — catching a bad address, an unaffordable amount or a
 malformed transaction before anything is broadcast. Confirming fetches a fresh
 blockhash and simulates once more.
 
-> **Move a small amount first.** No send path has been exercised with
-> significant real funds yet.
+> **Tested with real funds on mainnet:** Litecoin, Monero and Solana —
+> sending and receiving both confirmed on-chain. The other chains (Bitcoin,
+> Ethereum, Tron, and the USDC/USDT token transfers) haven't been exercised
+> with real money yet, so send a small amount first on those.
 
 ## Two-factor
 
