@@ -1,8 +1,4 @@
-// Live wallet data shared by every screen: addresses, balances and prices.
-//
-// Addresses come from the seed and cost nothing, so they load on unlock.
-// Balances and prices reach third parties, so they wait for consent and then
-// refresh on a timer.
+// Wallet state and startup.
 
 import { ASSETS } from "./assets";
 import {
@@ -19,16 +15,10 @@ import { settings } from "./settings.svelte";
 
 const CONSENT_KEY = "shinyflakes.network";
 
-/** Balances are keyed by asset, except a token's per-network entries, which
- *  add the network so they sit alongside the summed total (keyed by asset). */
 function balanceKey(e: { asset: string; network?: NetworkId | null }): string {
   return e.network ? `${e.asset}:${e.network}` : e.asset;
 }
 
-// Refresh on a jittered interval rather than a fixed beat. A request landing
-// at a public endpoint every exact 60 seconds is itself a fingerprint that
-// ties separate lookups to one wallet; a random gap in a range breaks that
-// regularity without polling so often it becomes a burden.
 const REFRESH_MIN_MS = 45_000;
 const REFRESH_MAX_MS = 90_000;
 
@@ -52,7 +42,6 @@ class Wallet {
   activityLoading = $state(false);
   activityError = $state<string | null>(null);
 
-  /** Monero spendable balance, which lags the total while change matures. */
   moneroUnlocked = $state<string | null>(null);
 
   moneroRunning = $state(false);
@@ -79,19 +68,13 @@ class Wallet {
     }
   }
 
-  /** Called once on unlock. Starts polling only if consent was already given. */
   start() {
     void this.loadAddresses();
 
-    // Monero was left switched on, so bring its daemon back up rather than
-    // showing a connection error for something the user already set up.
-    // Stopping it clears the endpoint, so a deliberate stop stays stopped.
     if (settings.moneroReady) {
       void this.startMonero();
     }
 
-    // Bring Tor up before the first lookup, so balances are never fetched in
-    // the clear on a launch where routing was meant to be on.
     void this.#beginNetwork();
   }
 
@@ -106,7 +89,6 @@ class Wallet {
     }
   }
 
-  /** Brings Tor up and routes through it. Remembered across launches. */
   async startTor() {
     if (this.torStarting) return;
     this.torStarting = true;
@@ -134,7 +116,6 @@ class Wallet {
     settings.setTorEnabled(false);
   }
 
-  /** Brings the Monero daemon up, adopting one that is already running. */
   async startMonero() {
     if (this.moneroStarting) return;
     this.moneroStarting = true;
@@ -167,8 +148,6 @@ class Wallet {
     this.#timer = undefined;
   }
 
-  // A self-rescheduling timeout rather than a fixed interval, so each gap is
-  // drawn fresh. The refresh runs, then the next one is booked.
   #schedule() {
     clearTimeout(this.#timer);
     this.#timer = setTimeout(() => {
@@ -178,9 +157,6 @@ class Wallet {
     }, nextDelay());
   }
 
-  // Prices are quoted in one currency, so switching invalidates them all.
-  // Clearing first stops the old numbers being relabelled with the new
-  // symbol for the second or two before the refetch lands.
   async setCurrency(code: CurrencyCode) {
     this.prices = {};
     settings.setCurrency(code);
@@ -204,7 +180,7 @@ class Wallet {
     try {
       localStorage.setItem(CONSENT_KEY, "yes");
     } catch {
-      /* the choice simply will not persist */
+
     }
     this.connected = true;
     await this.refresh();
@@ -216,17 +192,13 @@ class Wallet {
     this.loading = true;
     this.error = null;
 
-    // Settled, not all: a price outage must not hide balances.
     const [b, p] = await Promise.allSettled([
       ipc.fetchBalances(),
       ipc.fetchPrices(settings.currency),
     ]);
 
     if (b.status === "fulfilled") {
-      // A chain that failed this time keeps whatever it reported last time.
-      // Replacing a real balance with "Unavailable" because one request
-      // dropped is worse than showing a number that is a minute old, so the
-      // error is recorded alongside the value rather than instead of it.
+
       const next: Record<string, AssetBalance> = {};
       for (const entry of b.value) {
         const key = balanceKey(entry);
@@ -243,11 +215,6 @@ class Wallet {
     }
     if (p.status === "fulfilled") this.prices = p.value;
 
-    // Monero cannot be read from an address, so it comes from the local
-    // wallet daemon instead, when one has been configured.
-    //
-    // Skipped while the daemon is still coming up: asking too early would
-    // report a connection failure for something that is simply not ready.
     if (settings.moneroReady && !this.moneroStarting) {
       try {
         const xmr = await ipc.xmrBalance(settings.moneroEndpoint);
@@ -273,8 +240,6 @@ class Wallet {
     this.loading = false;
   }
 
-  /** Whole units as a float, for cash conversion only. Displayed amounts are
-   *  rendered from the decimal string so they stay exact. */
   #whole(minor: string, decimals: number) {
     return Number(minor) / 10 ** decimals;
   }
@@ -287,8 +252,6 @@ class Wallet {
     return this.#whole(minor, meta.decimals) * quote.price;
   }
 
-  /** A token's per-network balances, in display order. Empty for a native
-   *  coin. The main `balances[asset]` entry holds the summed total. */
   networks(asset: AssetId): AssetBalance[] {
     const order: NetworkId[] = ["SOL", "ETH", "TRON"];
     return order
@@ -300,8 +263,6 @@ class Wallet {
     return ASSETS.reduce((sum, a) => sum + (this.value(a.id) ?? 0), 0);
   }
 
-  // Portfolio move over the day, weighted by what each holding is worth.
-  // A coin you hold none of cannot swing the number.
   get totalChange24h(): number | null {
     let weighted = 0;
     let base = 0;
@@ -315,7 +276,6 @@ class Wallet {
     return base === 0 ? null : weighted / base;
   }
 
-  /** Assets holding something, which is all the send screen should offer. */
   get funded() {
     return ASSETS.filter((a) => {
       const minor = this.balances[a.id]?.minor;
@@ -327,22 +287,18 @@ class Wallet {
     return ASSETS.some((a) => this.balances[a.id]?.minor != null);
   }
 
-  /** Balances read but priced at nothing, so quietly missing from the total. */
   get unpriced() {
     return ASSETS.filter(
       (a) => this.balances[a.id]?.minor != null && this.prices[a.id] == null,
     ).length;
   }
 
-  // Chains that could not be read at all, so have nothing to show.
   get failures() {
     return ASSETS.filter(
       (a) => this.balances[a.id]?.error && this.balances[a.id]?.minor == null,
     ).length;
   }
 
-  // Chains showing a value from an earlier refresh because the latest one
-  // failed.
   get stale() {
     return ASSETS.filter(
       (a) => this.balances[a.id]?.error && this.balances[a.id]?.minor != null,

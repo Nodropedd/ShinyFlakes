@@ -1,7 +1,7 @@
+//! Error types.
+
 use serde::ser::SerializeStruct;
 
-/// Every failure the UI can see. Messages are written for a person reading a
-/// dialog, and deliberately say nothing about key material or file contents.
 #[derive(Debug, thiserror::Error)]
 pub enum WalletError {
     #[error("That is not a valid BIP-39 seed phrase.")]
@@ -57,8 +57,7 @@ pub enum WalletError {
 }
 
 impl WalletError {
-    /// Stable machine-readable tag. The UI branches on this, never on the
-    /// message text.
+
     pub fn kind(&self) -> &'static str {
         match self {
             Self::InvalidMnemonic => "InvalidMnemonic",
@@ -81,8 +80,7 @@ impl WalletError {
 }
 
 impl serde::Serialize for WalletError {
-    // Fully qualified: the Result alias below shadows the std one in this
-    // module, and the trait requires the serializer's own error type.
+
     fn serialize<S: serde::Serializer>(
         &self,
         s: S,

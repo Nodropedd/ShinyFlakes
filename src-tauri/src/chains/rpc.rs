@@ -1,10 +1,4 @@
-//! Balance and price lookups.
-//!
-//! This is the only part of the wallet that touches the network, and every
-//! request here tells a third party which addresses you are interested in and
-//! what your IP is. That is a real privacy cost, it is surfaced in the UI, and
-//! these endpoints are meant to become configurable once the connectivity
-//! section of the spec is settled.
+//! Node calls, Tor-aware.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -16,9 +10,6 @@ use crate::error::{Result, WalletError};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-// Several providers speak the same Esplora API, so each chain lists more than
-// one. mempool.space in particular refuses connections often enough from some
-// networks that a single source is not dependable.
 const BTC_APIS: [&str; 2] = [
     "https://mempool.space/api/address/",
     "https://blockstream.info/api/address/",
@@ -26,32 +17,26 @@ const BTC_APIS: [&str; 2] = [
 const LTC_APIS: [&str; 1] = ["https://litecoinspace.org/api/address/"];
 const SOL_RPC: &str = "https://api.mainnet-beta.solana.com";
 const TRON_API: &str = "https://api.trongrid.io/v1/accounts/";
-/// Full-node HTTP API, for building and broadcasting Tron transactions.
+
 const TRON_HOST: &str = "https://api.trongrid.io";
 const PRICE_API: &str = "https://api.coingecko.com/api/v3/simple/price";
 
 const ALL_ASSETS: [&str; 8] = ["BTC", "LTC", "XMR", "ETH", "SOL", "TRON", "USDC", "USDT"];
 
-/// One asset's balance, or the reason it could not be read. A failure on one
-/// chain must not blank out the others.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetBalance {
     pub asset: String,
-    /// Smallest units as a decimal string. Never a number: a JS float cannot
-    /// hold 12-decimal Monero amounts without losing the low digits.
+
     pub minor: Option<String>,
     pub error: Option<String>,
-    /// For a token, which network this balance is on. `None` for a native coin
-    /// or for a token's summed-across-networks total.
+
     pub network: Option<String>,
 }
 
 impl AssetBalance {
     fn ok(asset: &str, minor: i128) -> Self {
-        // A negative balance is arithmetically impossible and means the
-        // endpoint or our parsing of it is wrong. Clamping to zero would hide
-        // that behind a plausible-looking number, so it is reported instead.
+
         if minor < 0 {
             return Self::failed(
                 asset,
@@ -75,7 +60,6 @@ impl AssetBalance {
         }
     }
 
-    /// A token balance on a specific network.
     fn ok_net(asset: &str, network: &str, minor: u128) -> Self {
         Self {
             asset: asset.into(),
@@ -95,16 +79,10 @@ impl AssetBalance {
     }
 }
 
-/// The client every remote lookup uses.
-///
-/// When Tor routing is on, requests go through the local Tor proxy, so the
-/// endpoint sees a Tor exit rather than this machine. When it is off, they go
-/// out directly. Tor is checked per call, so the toggle takes effect at once.
 pub fn client() -> Result<reqwest::Client> {
     let mut builder = crate::http_client::builder()
         .timeout(TIMEOUT)
-        // Deliberately generic. Announcing the wallet by name in every request
-        // would hand the endpoint operator an easy fingerprint.
+
         .user_agent("Mozilla/5.0");
 
     if crate::tor::routing() {
@@ -114,12 +92,6 @@ pub fn client() -> Result<reqwest::Client> {
     builder.build().map_err(|e| WalletError::Network(e.to_string()))
 }
 
-/// A client that never goes through Tor, whatever the setting.
-///
-/// Used to fetch Tor itself, since the proxy cannot carry the download that
-/// installs it, and for the local Monero download where a large transfer over
-/// Tor would be needlessly slow. Android downloads neither — both come inside
-/// the APK — so it has no use there.
 #[cfg(not(target_os = "android"))]
 pub fn plain_client() -> Result<reqwest::Client> {
     crate::http_client::builder()
@@ -133,12 +105,6 @@ fn net(e: impl std::fmt::Display) -> WalletError {
     WalletError::Network(e.to_string())
 }
 
-/// Runs a request, and on failure gives it one more go after a short pause.
-///
-/// These endpoints drop the occasional connection, and a single blip should
-/// not blank a balance the user was reading a moment ago. The first error is
-/// what gets reported if the retry fails too, since it is usually the more
-/// informative one.
 async fn twice<T, F, Fut>(attempt: F) -> Result<T>
 where
     F: Fn() -> Fut,
@@ -153,7 +119,6 @@ where
     }
 }
 
-/// Plain GET returning parsed JSON. Shared with the history module.
 pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
     client()?
         .get(url)
@@ -167,7 +132,6 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
         .map_err(net)
 }
 
-/// One Solana JSON-RPC call, for callers outside this module.
 pub async fn sol_call<T: serde::de::DeserializeOwned>(
     method: &str,
     params: serde_json::Value,
@@ -175,8 +139,6 @@ pub async fn sol_call<T: serde::de::DeserializeOwned>(
     let c = client()?;
     sol_rpc(&c, method, params).await
 }
-
-// ---------- Bitcoin and Litecoin, via the Esplora API shape ----------
 
 #[derive(Deserialize)]
 struct EsploraStats {
@@ -190,7 +152,6 @@ struct EsploraAddress {
     mempool_stats: EsploraStats,
 }
 
-/// Tries each provider in turn, returning the first that answers.
 async fn esplora_any(c: &reqwest::Client, bases: &[&str], address: &str) -> Result<i128> {
     let mut last = WalletError::Network("no provider configured".into());
     for base in bases {
@@ -214,14 +175,10 @@ async fn esplora(c: &reqwest::Client, base: &str, address: &str) -> Result<i128>
         .await
         .map_err(net)?;
 
-    // Unconfirmed movement is included so a just-received payment shows up
-    // rather than appearing to vanish until the next block.
     Ok(body.chain_stats.funded_txo_sum - body.chain_stats.spent_txo_sum
         + body.mempool_stats.funded_txo_sum
         - body.mempool_stats.spent_txo_sum)
 }
-
-// ---------- Bitcoin and Litecoin spending ----------
 
 #[derive(Deserialize)]
 struct EsploraUtxoStatus {
@@ -244,25 +201,12 @@ pub fn btc_apis(chain: super::btc_tx::Chain) -> &'static [&'static str] {
     }
 }
 
-/// Confirmed spendable outputs, largest first.
-///
-/// Unconfirmed ones are skipped: spending an output that has not settled makes
-/// the new transaction depend on it, and a wallet this young should not be
-/// building chains of unconfirmed spends.
-/// Addresses fetched per round. Esplora has no multi-address endpoint, so
-/// this is one request each.
 pub const SCAN_BATCH: u32 = 10;
 
-/// Stop after this many consecutive addresses hold nothing. An unfragmented
-/// wallet therefore costs one batch, and a heavily fragmented one costs
-/// roughly as many requests as it has used addresses.
 pub const SCAN_GAP: u32 = 10;
 
-/// Hard stop, so a scan can never run away.
 pub const SCAN_CEILING: u32 = 400;
 
-/// Outputs for one batch of addresses, kept per address so the caller can
-/// tell where the used range ends.
 pub async fn esplora_utxos_batch(
     bases: &[&str],
     addresses: &[(u32, String)],
@@ -277,8 +221,7 @@ pub async fn esplora_utxos_batch(
     for (index, result) in found {
         match result {
             Ok(list) => out.push((index, list)),
-            // One address failing must not hide the rest, but if every one
-            // fails the caller must not conclude the wallet is empty.
+
             Err(_) => {
                 failures += 1;
                 out.push((index, Vec::new()));
@@ -314,8 +257,7 @@ pub async fn esplora_utxos(
                     if raw.len() != 32 {
                         return Err(WalletError::Network("txid was not 32 bytes".into()));
                     }
-                    // The API prints ids in display order; the wire format is
-                    // the reverse.
+
                     let mut txid = [0u8; 32];
                     for (i, b) in raw.iter().rev().enumerate() {
                         txid[i] = *b;
@@ -348,11 +290,6 @@ struct EsploraAddressInfo {
     mempool_stats: EsploraChainStats,
 }
 
-/// Whether an address has ever appeared on the chain.
-///
-/// Reusing an address links every payment ever sent to it, so receiving
-/// hands out the first one that has never been seen. Mempool activity counts
-/// as used, otherwise a second receive within a block would reuse it.
 pub async fn esplora_address_used(bases: &[&str], address: &str) -> Result<bool> {
     let mut last = WalletError::Network("no provider configured".into());
     for base in bases {
@@ -366,25 +303,21 @@ pub async fn esplora_address_used(bases: &[&str], address: &str) -> Result<bool>
     Err(last)
 }
 
-/// Fee rate in satoshi per virtual byte for confirmation within a few blocks.
 pub async fn esplora_fee_rate(bases: &[&str]) -> Result<f64> {
     for base in bases {
-        // The estimates endpoint sits beside the address one.
+
         let root = base.trim_end_matches("address/");
         if let Ok(map) = get_json::<HashMap<String, f64>>(&format!("{root}fee-estimates")).await {
-            // Three blocks is a reasonable default: not the most expensive
-            // tier, but not an overnight wait either.
+
             if let Some(rate) = map.get("3").or_else(|| map.get("6")).or_else(|| map.get("1")) {
                 return Ok(rate.max(1.0));
             }
         }
     }
-    // Every provider refused, so fall back to the network minimum rather than
-    // failing the whole send.
+
     Ok(2.0)
 }
 
-/// Publishes a signed transaction. Returns its id.
 pub async fn esplora_broadcast(bases: &[&str], raw: &[u8]) -> Result<String> {
     let hex: String = raw.iter().map(|b| format!("{b:02x}")).collect();
     let mut last = WalletError::Network("no provider configured".into());
@@ -404,8 +337,7 @@ pub async fn esplora_broadcast(bases: &[&str], raw: &[u8]) -> Result<String> {
                 if status.is_success() {
                     return Ok(body.trim().to_string());
                 }
-                // The node explains why it refused, and that message is far
-                // more useful than the status code.
+
                 last = WalletError::Network(format!("the network rejected it: {}", body.trim()));
             }
             Err(e) => last = net(e),
@@ -413,8 +345,6 @@ pub async fn esplora_broadcast(bases: &[&str], raw: &[u8]) -> Result<String> {
     }
     Err(last)
 }
-
-// ---------- Solana ----------
 
 #[derive(Deserialize)]
 struct RpcError {
@@ -499,10 +429,6 @@ struct TokenAccount {
     account: TokenAccountInner,
 }
 
-/// The owner's token accounts for a mint, as (account pubkey, amount) pairs.
-/// The pubkey is the on-chain address that actually holds the tokens, read
-/// from the node rather than derived, so it can be trusted as ground truth
-/// and cross-checked against a local derivation.
 pub async fn sol_token_accounts(owner: &str, mint: &str) -> Result<Vec<(String, u128)>> {
     let c = client()?;
     let v: SolValue<Vec<TokenAccount>> = sol_rpc(
@@ -528,8 +454,6 @@ pub async fn sol_token_accounts(owner: &str, mint: &str) -> Result<Vec<(String, 
         .collect())
 }
 
-/// An SPL token balance in its smallest unit, summed across the owner's
-/// accounts for that mint.
 pub async fn sol_spl_balance(owner: &str, mint: &str) -> Result<u128> {
     Ok(sol_token_accounts(owner, mint)
         .await?
@@ -538,16 +462,11 @@ pub async fn sol_spl_balance(owner: &str, mint: &str) -> Result<u128> {
         .sum())
 }
 
-// ---------- Ethereum ----------
-
-/// Public endpoints, tried in order. Both were checked to answer eth_chainId
-/// with mainnet; several other well-known ones now require an API key.
 const ETH_RPCS: [&str; 2] = [
     "https://cloudflare-eth.com",
     "https://ethereum-rpc.publicnode.com",
 ];
 
-/// Quantities come back as minimal hex with an 0x prefix.
 fn parse_hex_u128(text: &str) -> Result<u128> {
     let clean = text.trim().trim_start_matches("0x");
     if clean.is_empty() {
@@ -596,8 +515,6 @@ pub async fn eth_balance(address: &str) -> Result<u128> {
     parse_hex_u128(&hex)
 }
 
-/// Next usable nonce. "pending" is used so a second send does not collide
-/// with one still sitting in the mempool.
 pub async fn eth_nonce(address: &str) -> Result<u64> {
     let hex: String =
         eth_call_rpc("eth_getTransactionCount", serde_json::json!([address, "pending"])).await?;
@@ -610,12 +527,6 @@ struct EthBlock {
     base_fee: Option<String>,
 }
 
-/// Current base fee and a tip, in wei.
-///
-/// The cap is set to twice the base fee plus the tip, which is the usual
-/// headroom: the base fee can rise at most 12.5% per block, so this survives
-/// several blocks of congestion without overpaying, since anything unused is
-/// refunded.
 pub async fn eth_fees() -> Result<(u128, u128)> {
     let block: EthBlock =
         eth_call_rpc("eth_getBlockByNumber", serde_json::json!(["latest", false])).await?;
@@ -627,17 +538,13 @@ pub async fn eth_fees() -> Result<(u128, u128)> {
     let tip = match eth_call_rpc::<String>("eth_maxPriorityFeePerGas", serde_json::json!([])).await
     {
         Ok(hex) => parse_hex_u128(&hex).unwrap_or(1_500_000_000),
-        // Not every endpoint implements it; 1.5 gwei is the common default.
+
         Err(_) => 1_500_000_000,
     };
 
     Ok((base * 2 + tip, tip))
 }
 
-/// Gas an ERC-20 transfer will take. Estimated rather than assumed,
-/// because it depends on whether the recipient already holds the token.
-///
-/// Unused until USDT on Ethereum is wired up, which is what it exists for.
 #[allow(dead_code)]
 pub async fn eth_estimate_gas(from: &str, to: &str, data: &str) -> Result<u64> {
     let hex: String = eth_call_rpc(
@@ -645,12 +552,10 @@ pub async fn eth_estimate_gas(from: &str, to: &str, data: &str) -> Result<u64> {
         serde_json::json!([{ "from": from, "to": to, "data": data }]),
     )
     .await?;
-    // A little headroom, since the estimate is taken against the current
-    // state and execution happens later.
+
     Ok((parse_hex_u128(&hex)? as u64).saturating_mul(12) / 10)
 }
 
-/// Reads a contract without spending anything.
 #[allow(dead_code)]
 pub async fn eth_view(contract: &str, data: &str) -> Result<u128> {
     let hex: String = eth_call_rpc(
@@ -665,8 +570,6 @@ pub async fn eth_broadcast(raw: &[u8]) -> Result<String> {
     let hex: String = format!("0x{}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>());
     eth_call_rpc("eth_sendRawTransaction", serde_json::json!([hex])).await
 }
-
-// ---------- Tron ----------
 
 #[derive(Deserialize)]
 struct TronAccount {
@@ -696,7 +599,6 @@ async fn tron_account(c: &reqwest::Client, address: &str) -> Result<Option<TronA
     Ok(body.data.into_iter().next())
 }
 
-/// TRX balance in sun, or zero for an account that has never been funded.
 pub async fn tron_trx_balance(address: &str) -> Result<u64> {
     let c = client()?;
     match tron_account(&c, address).await? {
@@ -705,7 +607,6 @@ pub async fn tron_trx_balance(address: &str) -> Result<u64> {
     }
 }
 
-/// A TRC-20 token balance in its smallest unit, for one contract.
 pub async fn tron_trc20_balance(address: &str, contract: &str) -> Result<u128> {
     let c = client()?;
     match tron_account(&c, address).await? {
@@ -719,7 +620,6 @@ pub async fn tron_trc20_balance(address: &str, contract: &str) -> Result<u128> {
     }
 }
 
-/// A Tron error body that surfaced as `message` is often hex-encoded ASCII.
 fn tron_message(v: &serde_json::Value) -> String {
     let code = v.get("code").and_then(|c| c.as_str()).unwrap_or("");
     let raw = v.get("message").and_then(|m| m.as_str()).unwrap_or("");
@@ -731,9 +631,6 @@ fn tron_message(v: &serde_json::Value) -> String {
     format!("{code} {decoded}").trim().to_string()
 }
 
-/// Asks the node to build an unsigned TRX transfer. The node supplies the
-/// block reference and timestamps; the caller verifies the recipient and
-/// amount against the returned raw data before signing it.
 pub async fn tron_create_transfer(
     owner: &str,
     to: &str,
@@ -767,9 +664,6 @@ pub async fn tron_create_transfer(
     Ok(v)
 }
 
-/// Asks the node to build an unsigned TRC-20 (or other) contract call. Same
-/// trust model as `tron_create_transfer`: the raw data is verified before it
-/// is signed.
 pub async fn tron_trigger(
     owner: &str,
     contract: &str,
@@ -799,7 +693,6 @@ pub async fn tron_trigger(
         .await
         .map_err(net)?;
 
-    // triggersmartcontract wraps the tx and reports a result block.
     let ok = v
         .get("result")
         .and_then(|r| r.get("result"))
@@ -818,7 +711,6 @@ pub async fn tron_trigger(
         .ok_or_else(|| net("Tron did not build the transaction"))
 }
 
-/// Broadcasts a signed Tron transaction, returning its id on success.
 pub async fn tron_broadcast(signed: &serde_json::Value) -> Result<String> {
     let c = client()?;
     let v: serde_json::Value = c
@@ -844,7 +736,6 @@ pub async fn tron_broadcast(signed: &serde_json::Value) -> Result<String> {
     Err(net(format!("Tron rejected the transfer: {}", tron_message(&v))))
 }
 
-/// An ERC-20 token balance for an address, via `balanceOf`.
 async fn eth_token_balance(address: &str, contract: &str) -> Result<u128> {
     let owner = super::eth::parse_address(address)?;
     let data: String = super::eth::erc20_balance_data(&owner)
@@ -854,8 +745,6 @@ async fn eth_token_balance(address: &str, contract: &str) -> Result<u128> {
     eth_view(contract, &format!("0x{data}")).await
 }
 
-/// Every stablecoin balance: one entry per network, plus a summed total per
-/// token (the total carries no network). All six network reads run at once.
 async fn token_balances(
     sol: Option<&str>,
     eth: Option<&str>,
@@ -914,9 +803,7 @@ async fn token_balances(
                 }
             }
         }
-        // The summed total, so a wallet holding the same coin on two chains
-        // shows one figure as well as the split. Carries the last error if any
-        // network could not be read, so a partial total is not read as final.
+
         out.push(if any_ok {
             AssetBalance {
                 asset: asset.into(),
@@ -931,19 +818,12 @@ async fn token_balances(
     out
 }
 
-// ---------- Entry point ----------
-
 fn address_of(list: &[AssetAddress], asset: &str) -> Option<String> {
     list.iter()
         .find(|a| a.asset == asset)
         .and_then(|a| a.address.clone())
 }
 
-/// Reads every chain at once.
-///
-/// These were sequential once, which meant a single slow or timing-out
-/// endpoint held up all the others and left the UI showing "Refreshing" for
-/// most of a minute. Now the whole set takes as long as the slowest one.
 pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     let c = match client() {
         Ok(c) => c,
@@ -1005,9 +885,6 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     out.push(one("BTC", btc));
     out.push(one("LTC", ltc));
 
-    // Monero balances cannot be looked up from an address. Outputs are only
-    // discoverable by scanning the chain with the account private view key,
-    // which needs a node or a light-wallet server, not a REST call.
     out.push(AssetBalance::failed(
         "XMR",
         "Monero cannot be queried by address. Reading this balance needs a node          or light-wallet server scanning with your private view key.",
@@ -1017,15 +894,12 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     out.push(one("SOL", sol));
 
     match tron {
-        // An account that has never been funded does not exist on Tron, which
-        // is a real zero rather than an error.
+
         Ok(None) => out.push(AssetBalance::ok("TRON", 0)),
         Ok(Some(account)) => out.push(AssetBalance::ok("TRON", account.balance)),
         Err(e) => out.push(AssetBalance::failed("TRON", &e)),
     }
 
-    // Every stablecoin, per network plus a total. These reach the token
-    // contracts on each chain, so they run after the native reads above.
     out.extend(
         token_balances(
             sol_addr.as_deref(),
@@ -1037,15 +911,11 @@ pub async fn balances(addresses: &[AssetAddress]) -> Vec<AssetBalance> {
     out
 }
 
-// ---------- Solana transfers ----------
-
 #[derive(Deserialize)]
 struct Blockhash {
     blockhash: String,
 }
 
-/// A transaction is only valid against a recent blockhash, which is also what
-/// stops it being replayed later.
 pub async fn sol_latest_blockhash() -> Result<[u8; 32]> {
     let c = client()?;
     let v: SolValue<Blockhash> = sol_rpc(
@@ -1073,9 +943,6 @@ struct SimulationValue {
     logs: Option<Vec<String>>,
 }
 
-/// Runs the transaction against a node without submitting it. The node
-/// executes it exactly as it would on chain and reports what would happen,
-/// which is how a transfer can be checked without spending anything.
 pub async fn sol_simulate(tx: &[u8]) -> Result<()> {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(tx);
@@ -1091,7 +958,7 @@ pub async fn sol_simulate(tx: &[u8]) -> Result<()> {
     match v.value.err {
         None => Ok(()),
         Some(e) => {
-            // The last log line is usually the useful one.
+
             let detail = v
                 .value
                 .logs
@@ -1106,28 +973,16 @@ pub async fn sol_simulate(tx: &[u8]) -> Result<()> {
     }
 }
 
-/// Smallest balance a zero-data account may keep without being purged.
-///
-/// Solana will not let a transfer leave an account holding less than this
-/// unless it empties it completely, so any send has to either stay under
-/// balance minus fee minus this, or take everything.
 pub async fn sol_rent_exempt_minimum() -> Result<u64> {
     let c = client()?;
     sol_rpc(&c, "getMinimumBalanceForRentExemption", serde_json::json!([0])).await
 }
 
-/// Current balance in lamports for one address.
 pub async fn sol_balance_of(address: &str) -> Result<i128> {
     let c = client()?;
     sol_balance(&c, address).await
 }
 
-/// Asks a node what this message would cost. It has to deserialize the
-/// message to answer, so a non-null result also confirms the encoding is
-/// well formed, independently of whether the payer can afford it.
-///
-/// Only the transaction-format test needs this; the send flow uses the fixed
-/// per-signature fee instead of paying for an extra round trip.
 #[cfg(test)]
 pub async fn sol_fee_for_message(message: &[u8]) -> Result<Option<u64>> {
     use base64::Engine;
@@ -1143,7 +998,6 @@ pub async fn sol_fee_for_message(message: &[u8]) -> Result<Option<u64>> {
     Ok(v.value)
 }
 
-/// Submits the transaction. Returns its signature, which is its id on chain.
 pub async fn sol_broadcast(tx: &[u8]) -> Result<String> {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(tx);
@@ -1157,9 +1011,6 @@ pub async fn sol_broadcast(tx: &[u8]) -> Result<String> {
     .await
 }
 
-// ---------- Prices ----------
-
-/// CoinGecko ids for each asset.
 const PRICE_IDS: [(&str, &str); 8] = [
     ("BTC", "bitcoin"),
     ("LTC", "litecoin"),
@@ -1171,8 +1022,6 @@ const PRICE_IDS: [(&str, &str); 8] = [
     ("USDT", "tether"),
 ];
 
-/// A spot price plus its move over the last day, in whatever currency was
-/// asked for.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Quote {
@@ -1180,12 +1029,8 @@ pub struct Quote {
     pub change24h: Option<f64>,
 }
 
-/// Currencies the price feed will answer in. Kept to a fixed list so a bad
-/// value cannot be pushed into the request.
 pub const CURRENCIES: [&str; 8] = ["usd", "eur", "gbp", "chf", "jpy", "cad", "aud", "sek"];
 
-/// Spot prices in USD, keyed by asset id. One request covers all seven, so the
-/// price feed learns nothing beyond the fact that this IP wants crypto prices.
 pub async fn prices(currency: &str) -> Result<HashMap<String, Quote>> {
     let currency = currency.to_ascii_lowercase();
     if !CURRENCIES.contains(&currency.as_str()) {
@@ -1198,13 +1043,10 @@ pub async fn prices(currency: &str) -> Result<HashMap<String, Quote>> {
         .collect::<Vec<_>>()
         .join(",");
 
-    // Ids and currency are both from fixed lists, so nothing needs escaping.
     let url = format!(
         "{PRICE_API}?ids={ids}&vs_currencies={currency}&include_24hr_change=true"
     );
 
-    // The response keys carry the currency in them, so it is read as a plain
-    // map rather than a fixed struct.
     let raw: HashMap<String, HashMap<String, f64>> = client()?
         .get(url)
         .send()
@@ -1238,10 +1080,6 @@ pub async fn prices(currency: &str) -> Result<HashMap<String, Quote>> {
 mod tests {
     use super::*;
 
-    // These two constants decide which token a balance is read for. A typo
-    // does not fail loudly at runtime, it just reports zero forever, so the
-    // shape is checked here instead.
-
     #[test]
     fn usdc_mint_is_a_valid_solana_pubkey() {
         let mint = crate::chains::tokens::contract("USDC", "SOL").unwrap();
@@ -1262,7 +1100,7 @@ mod tests {
 
     #[test]
     fn every_asset_gets_a_row_even_with_no_addresses() {
-        // A caller must always be able to render one line per asset.
+
         let out = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1273,14 +1111,11 @@ mod tests {
         for asset in ALL_ASSETS {
             assert!(names.contains(&asset), "{asset} missing from the result");
         }
-        // Nothing can have a balance without an address.
+
         assert!(out.iter().all(|b| b.minor.is_none() && b.error.is_some()));
     }
 }
 
-/// Live network checks. Ignored by default so an offline machine or a rate
-/// limit never fails an ordinary test run. Run with:
-///   cargo test live_ -- --ignored --nocapture
 #[cfg(test)]
 mod live {
     use super::*;
@@ -1304,16 +1139,12 @@ mod live {
                 (None, None) => panic!("{} returned neither a value nor a reason", b.asset),
             }
         }
-        // Everything except Monero should have answered with a number.
+
         for b in out.iter().filter(|b| b.asset != "XMR") {
             assert!(b.minor.is_some(), "{} failed: {:?}", b.asset, b.error);
         }
     }
 
-    /// Builds and signs a real transfer from the reference account, then has
-    /// a mainnet node execute it in simulation. Nothing is submitted and no
-    /// funds move, but the node verifies the signature and the serialized
-    /// message, so this fails loudly if either is wrong.
     #[tokio::test]
     #[ignore]
     async fn live_solana_transfer_simulates() {
@@ -1333,8 +1164,6 @@ mod live {
 
         println!("transaction is {} bytes", tx.len());
 
-        // The node has to deserialize the message to price it, so a real fee
-        // back means the encoding is right.
         let message = sol_tx::build_message(
             &sol_tx::signing_key(&s).verifying_key().to_bytes(),
             &sol_tx::parse_address("1nc1nerator11111111111111111111111111111111").unwrap(),
@@ -1348,11 +1177,6 @@ mod live {
         println!("mainnet priced the message at {fee} lamports");
         assert_eq!(fee, sol_tx::LAMPORTS_PER_SIGNATURE);
 
-        // Simulation goes further and verifies the signature as well. This
-        // particular reference account has been assigned to a third-party
-        // program, so it cannot pay fees and the node says so. Reaching that
-        // specific complaint means the message parsed and the signature
-        // checked out; anything else is a real defect.
         match sol_simulate(&tx).await {
             Ok(()) => println!("mainnet simulated the transfer without error"),
             Err(e) => {
@@ -1366,8 +1190,6 @@ mod live {
         }
     }
 
-    /// Pulls real history for the reference addresses and checks every entry
-    /// came back coherent. Catches a shape change in any of the four APIs.
     #[tokio::test]
     #[ignore]
     async fn live_history_parses() {
@@ -1389,7 +1211,6 @@ mod live {
             assert!(!e.id.is_empty());
         }
 
-        // Newest first.
         let times: Vec<i64> = entries.iter().filter_map(|e| e.timestamp).collect();
         assert!(times.windows(2).all(|w| w[0] >= w[1]), "not sorted newest first");
     }
@@ -1412,9 +1233,6 @@ mod live_eth {
     use crate::chains::eth;
     use crate::crypto::seed;
 
-    /// Reads the reference account from mainnet and checks the fee market
-    /// answers with sane numbers. Ignored by default like the other live
-    /// tests.
     #[tokio::test]
     #[ignore]
     async fn live_ethereum_reads() {
@@ -1436,7 +1254,6 @@ mod live_eth {
         assert!(max_fee > tip, "the cap must exceed the tip");
         assert!(max_fee < 10_000_000_000_000u128, "fee looks implausible");
 
-        // A plain transfer at this rate, in ether.
         let cost = max_fee * eth::TRANSFER_GAS as u128;
         println!("transfer ceiling {} ETH", cost as f64 / 1e18);
         assert!(cost > 0);

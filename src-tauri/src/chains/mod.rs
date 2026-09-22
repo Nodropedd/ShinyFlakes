@@ -1,7 +1,4 @@
-//! Address derivation from the BIP-39 seed.
-//!
-//! Nothing here touches the network. Given a seed these functions are pure and
-//! deterministic, which is what makes them testable against published vectors.
+//! Address derivation per chain.
 
 pub mod btc_tx;
 pub mod eth;
@@ -29,30 +26,25 @@ fn fail(what: &str, e: impl std::fmt::Display) -> WalletError {
     WalletError::Derivation(format!("{what}: {e}"))
 }
 
-/// One asset's receiving address, or the reason there isn't one.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetAddress {
     pub asset: String,
     pub address: Option<String>,
-    /// BIP-32 path the address came from.
+
     pub path: Option<String>,
-    /// Set when the asset is a token and the address belongs to its host
-    /// chain rather than to the token itself.
+
     pub host: Option<String>,
-    /// Set when no address could be produced, explaining why.
+
     pub unsupported: Option<String>,
 }
 
-/// Compressed secp256k1 public key at a BIP-32 path.
 fn secp_pubkey(seed: &[u8], path: &str) -> Result<k256::ecdsa::VerifyingKey> {
     let parsed: DerivationPath = path.parse().map_err(|e| fail("path", e))?;
     let xprv = XPrv::derive_from_path(seed, &parsed).map_err(|e| fail("derive", e))?;
     Ok(*xprv.public_key().public_key())
 }
 
-/// Native segwit (BIP-84) address. Bitcoin and Litecoin share this format and
-/// differ only in the human readable prefix.
 fn p2wpkh(seed: &[u8], path: &str, hrp: &str) -> Result<String> {
     let pubkey = secp_pubkey(seed, path)?;
     let compressed = pubkey.to_encoded_point(true);
@@ -61,12 +53,10 @@ fn p2wpkh(seed: &[u8], path: &str, hrp: &str) -> Result<String> {
     segwit::encode_v0(hrp, &hash160).map_err(|e| fail("bech32", e))
 }
 
-/// Tron: keccak256 over the uncompressed public key, last 20 bytes, prefixed
-/// with 0x41 and base58check encoded. Same shape as Ethereum plus the prefix.
 fn tron(seed: &[u8], path: &str) -> Result<String> {
     let pubkey = secp_pubkey(seed, path)?;
     let point = pubkey.to_encoded_point(false);
-    // Drop the 0x04 tag so only the X and Y coordinates are hashed.
+
     let hash = Keccak256::digest(&point.as_bytes()[1..]);
     let mut body = Vec::with_capacity(21);
     body.push(0x41);
@@ -74,7 +64,6 @@ fn tron(seed: &[u8], path: &str) -> Result<String> {
     Ok(bs58::encode(body).with_check().into_string())
 }
 
-/// Solana: ed25519 public key, base58 with no checksum.
 fn solana(seed: &[u8], path: &[u32]) -> Result<String> {
     let node = slip10::derive(seed, path);
     let signing = ed25519_dalek::SigningKey::from_bytes(&node.key);
@@ -87,7 +76,6 @@ pub const TRON_PATH: &str = "m/44'/195'/0'/0/0";
 pub const SOL_PATH: &[u32] = &[44, 501, 0, 0];
 pub const SOL_PATH_TEXT: &str = "m/44'/501'/0'/0'";
 
-/// Every asset's first receiving address.
 pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
     let btc = p2wpkh(seed, BTC_PATH, "bc")?;
     let ltc = p2wpkh(seed, LTC_PATH, "ltc")?;
@@ -120,8 +108,7 @@ pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
         owned("ETH", &eth_address, eth::ETH_PATH),
         owned("SOL", &sol, SOL_PATH_TEXT),
         owned("TRON", &trx, TRON_PATH),
-        // Tokens have no address of their own. They are held by the account on
-        // their host chain, so the receiving address is that chain's.
+
         token("USDC", &sol, SOL_PATH_TEXT, "SOL"),
         token("USDT", &trx, TRON_PATH, "TRON"),
     ])
@@ -132,7 +119,6 @@ mod tests {
     use super::*;
     use crate::crypto::seed;
 
-    // The all-zero-entropy phrase every BIP has used as its example.
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon \
                           abandon abandon abandon abandon abandon about";
 
@@ -142,7 +128,7 @@ mod tests {
 
     #[test]
     fn matches_the_bip84_bitcoin_vector() {
-        // Published in BIP-84 itself for this exact mnemonic and path.
+
         assert_eq!(
             p2wpkh(&test_seed(), BTC_PATH, "bc").unwrap(),
             "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
@@ -153,7 +139,7 @@ mod tests {
     fn litecoin_uses_its_own_prefix_and_coin_type() {
         let ltc = p2wpkh(&test_seed(), LTC_PATH, "ltc").unwrap();
         assert!(ltc.starts_with("ltc1q"), "unexpected address: {ltc}");
-        // Same seed, different coin type, so it must not collide with BTC.
+
         assert_ne!(ltc[4..], p2wpkh(&test_seed(), BTC_PATH, "bc").unwrap()[3..]);
     }
 
@@ -162,7 +148,7 @@ mod tests {
         let addr = tron(&test_seed(), TRON_PATH).unwrap();
         assert!(addr.starts_with('T'), "unexpected address: {addr}");
         assert_eq!(addr.len(), 34);
-        // The checksum must verify, and the payload must carry the 0x41 tag.
+
         let decoded: Vec<u8> = bs58::decode(&addr).with_check(None).into_vec().unwrap();
         assert_eq!(decoded.len(), 21);
         assert_eq!(decoded[0], 0x41);
@@ -212,21 +198,6 @@ mod golden {
     use super::*;
     use crate::crypto::seed;
 
-    // Regression lock on the full address set for the BIP-39 reference
-    // mnemonic. If a dependency changes how it derives or encodes, these
-    // break loudly instead of silently handing out wrong addresses.
-    //
-    // Confidence differs per line, and it matters:
-    //   BTC  - matches the address published in BIP-84 for this exact path.
-    //   SOL  - path and scheme match Phantom (SLIP-0010 over ed25519), and the
-    //          SLIP-0010 steps are covered by that spec's own vectors, but the
-    //          final string is not checked against a published one.
-    //   TRON - coin type 195 per TIP-01, encoding checked structurally only.
-    //   XMR  - the keccak view-key rule is Monero's, but mapping a BIP-39
-    //          seed to a spend key is this wallet's own convention. See the
-    //          note at the top of chains/xmr.rs.
-    // Cross-check SOL and TRON against a reference wallet before trusting
-    // them with funds.
     const PHRASE: &str = "abandon abandon abandon abandon abandon abandon                           abandon abandon abandon abandon abandon about";
 
     #[test]

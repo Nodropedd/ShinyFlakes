@@ -14,8 +14,6 @@
   import { settings } from "../lib/settings.svelte";
   import { wallet } from "../lib/wallet.svelte";
 
-  // Only true UTXO chains belong here. Monero has outputs too, but ring
-  // signatures mean its privacy does not depend on how they are arranged.
   const CHAINS = ASSETS.filter((a) => a.utxo);
 
   const CHAIN_KEY = "shinyflakes.utxoChain";
@@ -25,13 +23,11 @@
       const saved = localStorage.getItem(CHAIN_KEY);
       if (saved && CHAINS.some((c) => c.id === saved)) return saved as AssetId;
     } catch {
-      /* fall through to the default */
+
     }
     return CHAINS[0].id;
   }
 
-  // Persisted so a remount does not silently drop back to Bitcoin while the
-  // screen is showing Litecoin figures.
   let selected = $state<AssetId>(rememberedChain());
 
   function pickChain(id: AssetId) {
@@ -39,7 +35,7 @@
     try {
       localStorage.setItem(CHAIN_KEY, id);
     } catch {
-      /* the choice simply will not persist */
+
     }
   }
   let layout = $state<UtxoState | null>(null);
@@ -60,19 +56,13 @@
 
   const meta = $derived(BY_ID[selected]);
 
-  // Quotes carry the asset they were built for. Rendering against that rather
-  // than the locally selected chain means a mismatch can never show one
-  // chain's ticker against another chain's amounts.
   const layoutMeta = $derived(layout ? BY_ID[layout.asset] : meta);
   const splitMeta = $derived(quote ? BY_ID[quote.asset] : meta);
   const combineMeta = $derived(combineQuote ? BY_ID[combineQuote.asset] : meta);
   const price = $derived(wallet.prices[selected]?.price ?? null);
 
   async function load() {
-    // Switching chains starts a second lookup while the first is still in
-    // flight. Whichever returns last would otherwise win, which is how
-    // Bitcoin figures ended up under a Litecoin heading. Every response is
-    // checked against the chain still selected and dropped if it is stale.
+
     const forChain = selected;
     loading = true;
     error = null;
@@ -182,8 +172,6 @@
     }
   }
 
-  // Grouping by sub-wallet is what makes a split visible: one group before,
-  // several after.
   const grouped = $derived(
     (layout?.outputs ?? []).reduce<Record<number, UtxoEntry[]>>((acc, o) => {
       (acc[o.keyIndex] ??= []).push(o);

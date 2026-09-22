@@ -235,7 +235,7 @@
   }
   .qty { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .qty.unread { color: var(--text-faint); font-size: 12.5px; cursor: help; }
-  /* Last known value, this refresh could not confirm it. */
+
   .qty.stale { color: var(--text-muted); cursor: help; }
   .worth { font-size: 12px; font-variant-numeric: tabular-nums; }
 </style>

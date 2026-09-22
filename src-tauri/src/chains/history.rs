@@ -1,11 +1,4 @@
 //! Transaction history.
-//!
-//! Each chain reports its past differently, so every one is normalised here
-//! into the same shape: what moved, which way, when, and whether it settled.
-//!
-//! Amounts are the net effect on this wallet, not the raw transaction value.
-//! A Bitcoin transaction spending a large input and returning most of it as
-//! change moved only the difference, and that is what belongs in a history.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +6,6 @@ use super::rpc;
 use super::AssetAddress;
 use crate::error::{Result, WalletError};
 
-/// How many entries to pull from each chain.
 const LIMIT: usize = 15;
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,11 +13,11 @@ const LIMIT: usize = 15;
 pub struct Entry {
     pub asset: String,
     pub id: String,
-    /// "in" or "out", from this wallet's point of view.
+
     pub direction: String,
-    /// Absolute net movement in the asset's smallest unit.
+
     pub amount_minor: String,
-    /// Unix seconds. Absent while a transaction is still unconfirmed.
+
     pub timestamp: Option<i64>,
     pub confirmed: bool,
 }
@@ -42,8 +34,6 @@ impl Entry {
         }
     }
 }
-
-// ---------- Bitcoin and Litecoin ----------
 
 #[derive(Deserialize)]
 struct EsploraOut {
@@ -78,7 +68,7 @@ struct EsploraTx {
 }
 
 async fn esplora_history(asset: &str, bases: &[&str], address: &str) -> Result<Vec<Entry>> {
-    // Same reasoning as the balance lookups: one provider is not enough.
+
     let mut body: Vec<EsploraTx> = Vec::new();
     let mut last = WalletError::Network("no provider configured".into());
     let mut answered = false;
@@ -100,9 +90,7 @@ async fn esplora_history(asset: &str, bases: &[&str], address: &str) -> Result<V
         .into_iter()
         .take(LIMIT)
         .map(|tx| {
-            // Outputs paying us, minus our own inputs being spent. Change
-            // returning to the same address cancels itself out, which is what
-            // makes this the amount that actually left.
+
             let received: i128 = tx
                 .vout
                 .iter()
@@ -127,8 +115,6 @@ async fn esplora_history(asset: &str, bases: &[&str], address: &str) -> Result<V
         })
         .collect())
 }
-
-// ---------- Solana ----------
 
 #[derive(Deserialize)]
 struct SolSignature {
@@ -178,8 +164,6 @@ async fn solana_history(address: &str) -> Result<Vec<Entry>> {
     )
     .await?;
 
-    // Signatures alone carry no amount, so each one has to be fetched. They
-    // are independent, so they go out together rather than in sequence.
     let details = futures::future::join_all(signatures.iter().map(|s| {
         let sig = s.signature.clone();
         async move {
@@ -197,8 +181,7 @@ async fn solana_history(address: &str) -> Result<Vec<Entry>> {
 
     let mut out = Vec::new();
     for (summary, detail) in signatures.into_iter().zip(details) {
-        // A failed transaction still cost a fee, but reporting it as a
-        // transfer would be wrong.
+
         if summary.err.is_some() {
             continue;
         }
@@ -238,8 +221,6 @@ async fn solana_history(address: &str) -> Result<Vec<Entry>> {
 
     Ok(out)
 }
-
-// ---------- Tron ----------
 
 #[derive(Deserialize)]
 struct TronValue {
@@ -287,8 +268,6 @@ struct TronHistory {
     data: Vec<TronTx>,
 }
 
-/// Tron reports addresses as hex with the same 0x41 prefix the base58 form
-/// encodes, so ours is converted once for comparison.
 fn tron_hex(address: &str) -> Option<String> {
     let raw: Vec<u8> = bs58::decode(address).with_check(None).into_vec().ok()?;
     Some(raw.iter().map(|b| format!("{b:02x}")).collect())
@@ -308,8 +287,7 @@ async fn tron_history(address: &str) -> Result<Vec<Entry>> {
         .into_iter()
         .filter_map(|tx| {
             let contract = tx.raw_data?.contract.into_iter().next()?;
-            // Only plain transfers carry an amount that belongs in a balance
-            // history. Contract calls and staking are a different story.
+
             if contract.kind != "TransferContract" {
                 return None;
             }
@@ -338,19 +316,12 @@ async fn tron_history(address: &str) -> Result<Vec<Entry>> {
         .collect())
 }
 
-// ---------- Entry point ----------
-
 fn address_of(list: &[AssetAddress], asset: &str) -> Option<String> {
     list.iter()
         .find(|a| a.asset == asset)
         .and_then(|a| a.address.clone())
 }
 
-/// Everything the wallet can see, newest first.
-///
-/// Monero is absent for the same reason its balance is: history there means
-/// scanning the chain with the view key. Token transfers on Solana and Tron
-/// are not included yet either; only the native coin of each chain is.
 pub async fn all(addresses: &[AssetAddress]) -> Vec<Entry> {
     let btc = address_of(addresses, "BTC");
     let ltc = address_of(addresses, "LTC");
@@ -396,15 +367,12 @@ pub async fn all(addresses: &[AssetAddress]) -> Vec<Entry> {
         },
     );
 
-    // A chain that will not answer should cost its own entries, not everyone
-    // else's, so failures are dropped rather than propagated.
     let mut out: Vec<Entry> = [a, b, c, d]
         .into_iter()
         .filter_map(|r| r.ok())
         .flatten()
         .collect();
 
-    // Unconfirmed entries have no time yet and belong at the top.
     out.sort_by(|x, y| match (y.timestamp, x.timestamp) {
         (Some(a), Some(b)) => a.cmp(&b),
         (None, Some(_)) => std::cmp::Ordering::Greater,

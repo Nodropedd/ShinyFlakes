@@ -6,17 +6,13 @@
   let dataUrl = $state<string | null>(null);
   let error = $state(false);
 
-  // Rendered to a data URL rather than a live canvas, so it survives the
-  // dialog re-rendering and needs no node reference. Dark modules on a light
-  // ground always, because scanners expect that contrast regardless of the
-  // app theme; a white quiet-zone card sits behind it.
   $effect(() => {
     error = false;
     dataUrl = null;
     QRCode.toDataURL(value, {
       errorCorrectionLevel: "M",
       margin: 1,
-      width: size * 2, // oversample so it stays crisp when scaled down
+      width: size * 2,
       color: { dark: "#000000ff", light: "#ffffffff" },
     })
       .then((url) => (dataUrl = url))

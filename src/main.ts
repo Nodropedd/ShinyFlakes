@@ -1,27 +1,21 @@
+// Front-end entry; dev mock IPC.
+
 import "./app.css";
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { settings } from "./lib/settings.svelte";
 
-// Applied before the first paint so the window never flashes the wrong theme.
 settings.apply();
 
-// Dev-only browser preview. Opening the Vite server with ?mock installs a
-// stand-in for the Tauri bridge so wallet screens can be styled in a browser
-// without a Rust build. It is guarded by import.meta.env.DEV, so Vite drops
-// the whole block from a production bundle. It never runs inside the app: a
-// real Tauri window already provides the bridge, and the check below leaves
-// it alone.
 if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
   const w = window as unknown as Record<string, unknown>;
   if (!w.__TAURI_INTERNALS__) {
     console.warn("mock IPC bridge active: no wallet core, no real data");
-    // Preview the connected state without a click, since there is no real
-    // network call behind the mock to consent to.
+
     try {
       localStorage.setItem("shinyflakes.network", "yes");
     } catch {
-      /* ignore */
+
     }
     w.__TAURI_INTERNALS__ = {
       invoke: async (cmd: string, args?: Record<string, unknown>) => {
@@ -37,6 +31,10 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
             return null;
           case "auto_unlock":
             return false;
+          case "check_for_update":
+            return { current: "0.1.1", latest: "0.1.2", available: true };
+          case "open_download_page":
+            return null;
           case "stay_signed_in_state":
             return { enabled: false, available: true };
           case "set_stay_signed_in":
@@ -49,7 +47,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               { asset: "ETH", minor: "0", error: null },
               { asset: "SOL", minor: "2113349556", error: null },
               { asset: "TRON", minor: "0", error: null },
-              // Tokens: one entry per network, then a summed total.
+
               { asset: "USDC", minor: "4000000", error: null, network: "SOL" },
               { asset: "USDC", minor: "0", error: null, network: "ETH" },
               { asset: "USDC", minor: "0", error: null, network: "TRON" },
@@ -141,7 +139,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
           case "disable_two_factor":
             return null;
           case "verify_2fa":
-            // In the mock, 000000 is the code; anything else is wrong.
+
             return args?.code === "000000"
               ? { status: "ok", remaining: null, lockedUntil: null }
               : { status: "wrong", remaining: 2, lockedUntil: null };
@@ -197,10 +195,7 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
               USDT: { price: 0.999824, change24h: 0 },
             };
           case "list_addresses": {
-            // The BIP-39 reference mnemonic's addresses. These are published
-            // in the specs, publicly known, and must never hold funds. They
-            // are here so layout can be checked against real address lengths
-            // rather than invented strings.
+
             const SOL = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
             const TRX = "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH";
             return [
@@ -224,8 +219,6 @@ if (import.meta.env.DEV && new URLSearchParams(location.search).has("mock")) {
   }
 }
 
-// The app never navigates, so the context menu and drag-drop only offer ways
-// to leak or alter wallet chrome. Both are off outside text inputs.
 window.addEventListener("contextmenu", (e) => {
   if (!(e.target as HTMLElement)?.closest("input, textarea, .selectable")) {
     e.preventDefault();
@@ -235,4 +228,3 @@ window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => e.preventDefault());
 
 export default mount(App, { target: document.getElementById("app")! });
-

@@ -25,8 +25,6 @@
   const worth = $derived(wallet.value(asset));
   const move = $derived(quote?.change24h ?? null);
 
-  // Stablecoins live on several chains, each with its own balance and its own
-  // receiving address (the host chain's).
   const isToken = $derived(asset === "USDC" || asset === "USDT");
   const NETMETA: { id: NetworkId; name: string }[] = [
     { id: "SOL", name: "Solana" },

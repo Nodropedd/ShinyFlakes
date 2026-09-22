@@ -1,11 +1,4 @@
-//! Ethereum keys, addresses and transactions.
-//!
-//! Sending uses the EIP-1559 transaction type, which is what the network has
-//! priced in since London and what every current wallet emits. The older
-//! gas-price form still works but overpays.
-//!
-//! Amounts are held as u128 rather than u64 throughout: wei has eighteen
-//! decimal places, so a balance above about 18.4 ETH would overflow a u64.
+//! Ethereum and ERC-20.
 
 use bip32::{DerivationPath, XPrv};
 use k256::ecdsa::{RecoveryId, Signature, SigningKey};
@@ -16,8 +9,6 @@ use crate::error::{Result, WalletError};
 pub const ETH_PATH: &str = "m/44'/60'/0'/0/0";
 pub const CHAIN_ID: u64 = 1;
 
-/// A plain transfer costs exactly this much gas. Contract calls cost more and
-/// are estimated instead.
 pub const TRANSFER_GAS: u64 = 21_000;
 
 fn bad(what: &str, e: impl std::fmt::Display) -> WalletError {
@@ -31,8 +22,6 @@ fn keccak(data: &[u8]) -> [u8; 32] {
     result
 }
 
-// ---------- keys and addresses ----------
-
 pub struct Keys {
     pub signing: SigningKey,
     pub address: [u8; 20],
@@ -44,7 +33,7 @@ pub fn keys(seed: &[u8]) -> Result<Keys> {
     let signing = xprv.private_key().clone();
 
     let point = signing.verifying_key().to_encoded_point(false);
-    // Drop the 0x04 tag; the address is the hash of the raw coordinates.
+
     let hash = keccak(&point.as_bytes()[1..]);
 
     let mut address = [0u8; 20];
@@ -52,8 +41,6 @@ pub fn keys(seed: &[u8]) -> Result<Keys> {
     Ok(Keys { signing, address })
 }
 
-/// Mixed-case checksum form from EIP-55. The capitalisation is not cosmetic:
-/// it is a checksum, and wallets use it to catch mistyped addresses.
 pub fn to_checksum(address: &[u8; 20]) -> String {
     let lower: String = address.iter().map(|b| format!("{b:02x}")).collect();
     let hash = keccak(lower.as_bytes());
@@ -61,7 +48,7 @@ pub fn to_checksum(address: &[u8; 20]) -> String {
     let mut out = String::with_capacity(42);
     out.push_str("0x");
     for (i, c) in lower.chars().enumerate() {
-        // Each hex character is checked against its own nibble of the hash.
+
         let nibble = if i % 2 == 0 {
             hash[i / 2] >> 4
         } else {
@@ -76,11 +63,6 @@ pub fn to_checksum(address: &[u8; 20]) -> String {
     out
 }
 
-/// Parses a destination address, rejecting a bad EIP-55 checksum.
-///
-/// An all-lowercase or all-uppercase address carries no checksum, so it is
-/// accepted as-is. A mixed-case one that fails the check is a typo, and
-/// paying it would send the money nowhere recoverable.
 pub fn parse_address(text: &str) -> Result<[u8; 20]> {
     let trimmed = text.trim();
     let hex = trimmed.strip_prefix("0x").unwrap_or(trimmed);
@@ -106,9 +88,6 @@ pub fn parse_address(text: &str) -> Result<[u8; 20]> {
     Ok(address)
 }
 
-// ---------- RLP ----------
-
-/// Recursive length prefix, the encoding Ethereum uses for transactions.
 fn rlp_string(data: &[u8], out: &mut Vec<u8>) {
     if data.len() == 1 && data[0] < 0x80 {
         out.push(data[0]);
@@ -136,15 +115,11 @@ fn rlp_list(payload: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(payload);
 }
 
-/// Numbers are encoded as the shortest big-endian byte string, and zero is
-/// the empty string rather than a zero byte.
 fn rlp_uint(value: u128, out: &mut Vec<u8>) {
     let bytes = value.to_be_bytes();
     let start = bytes.iter().position(|b| *b != 0).unwrap_or(bytes.len());
     rlp_string(&bytes[start..], out);
 }
-
-// ---------- transactions ----------
 
 pub struct Transfer {
     pub nonce: u64,
@@ -166,20 +141,17 @@ fn payload(tx: &Transfer) -> Vec<u8> {
     rlp_string(&tx.to, &mut fields);
     rlp_uint(tx.value, &mut fields);
     rlp_string(&tx.data, &mut fields);
-    // Empty access list.
+
     fields.push(0xc0);
     fields
 }
 
-/// The digest signed for an EIP-1559 transaction: the type byte followed by
-/// the RLP-encoded fields, hashed with keccak.
 pub fn signing_hash(tx: &Transfer) -> [u8; 32] {
     let mut encoded = vec![0x02];
     rlp_list(&payload(tx), &mut encoded);
     keccak(&encoded)
 }
 
-/// Signs and returns the bytes to submit via eth_sendRawTransaction.
 pub fn sign(keys: &Keys, tx: &Transfer) -> Result<Vec<u8>> {
     let digest = signing_hash(tx);
 
@@ -188,8 +160,6 @@ pub fn sign(keys: &Keys, tx: &Transfer) -> Result<Vec<u8>> {
         .sign_prehash_recoverable(&digest)
         .map_err(|e| bad("signing", e))?;
 
-    // EIP-1559 carries the parity bit directly rather than folding the chain
-    // id into it the way pre-EIP-155 transactions did.
     let r = signature.r().to_bytes();
     let s = signature.s().to_bytes();
 
@@ -203,9 +173,6 @@ pub fn sign(keys: &Keys, tx: &Transfer) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Transaction id, which is the keccak hash of the submitted bytes.
-///
-/// The node returns this too, so it is only needed if one answers oddly.
 #[allow(dead_code)]
 pub fn tx_hash(signed: &[u8]) -> String {
     format!(
@@ -217,15 +184,8 @@ pub fn tx_hash(signed: &[u8]) -> String {
     )
 }
 
-// ---------- ERC-20 ----------
-
-/// Call data for `transfer(address,uint256)`.
-///
-/// Written and tested ahead of the USDT-on-Ethereum work, which needs it.
 #[allow(dead_code)]
-///
-/// The selector is the first four bytes of the keccak hash of the signature,
-/// followed by both arguments padded to 32 bytes each.
+
 pub fn erc20_transfer_data(to: &[u8; 20], amount: u128) -> Vec<u8> {
     let selector = &keccak(b"transfer(address,uint256)")[..4];
 
@@ -238,7 +198,6 @@ pub fn erc20_transfer_data(to: &[u8; 20], amount: u128) -> Vec<u8> {
     data
 }
 
-/// Call data for `balanceOf(address)`.
 #[allow(dead_code)]
 pub fn erc20_balance_data(owner: &[u8; 20]) -> Vec<u8> {
     let selector = &keccak(b"balanceOf(address)")[..4];
@@ -265,9 +224,6 @@ mod tests {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 
-    /// The address every Ethereum tool produces for the reference mnemonic at
-    /// the standard path. Widely published, and the check that the whole
-    /// derivation chain is right.
     #[test]
     fn matches_the_reference_address() {
         let k = keys(&test_seed()).unwrap();
@@ -277,7 +233,6 @@ mod tests {
         );
     }
 
-    /// The four examples given in EIP-55 itself.
     #[test]
     fn checksums_match_eip55() {
         let cases = [
@@ -294,14 +249,14 @@ mod tests {
 
     #[test]
     fn rejects_a_mistyped_address() {
-        // One character case flipped: a real typo would look like this.
+
         let wrong = "0x5aAeb6053f3E94C9b9A09f33669435E7Ef1BeAed";
         assert!(parse_address(wrong).is_err());
     }
 
     #[test]
     fn accepts_addresses_without_a_checksum() {
-        // All lowercase carries no checksum, so it cannot be wrong.
+
         assert!(parse_address("0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed").is_ok());
     }
 
@@ -318,17 +273,14 @@ mod tests {
         rlp_string(b"dog", &mut out);
         assert_eq!(hex(&out), "83646f67");
 
-        // A single byte below 0x80 is its own encoding.
         out.clear();
         rlp_string(&[0x0f], &mut out);
         assert_eq!(hex(&out), "0f");
 
-        // The empty string.
         out.clear();
         rlp_string(&[], &mut out);
         assert_eq!(hex(&out), "80");
 
-        // Zero encodes as the empty string, not as a zero byte.
         out.clear();
         rlp_uint(0, &mut out);
         assert_eq!(hex(&out), "80");
@@ -337,7 +289,6 @@ mod tests {
         rlp_uint(1024, &mut out);
         assert_eq!(hex(&out), "820400");
 
-        // A list of two short strings.
         let mut payload = Vec::new();
         rlp_string(b"cat", &mut payload);
         rlp_string(b"dog", &mut payload);
@@ -351,7 +302,7 @@ mod tests {
         let long = vec![b'a'; 56];
         let mut out = Vec::new();
         rlp_string(&long, &mut out);
-        // 0xb8 then one length byte then the payload.
+
         assert_eq!(out[0], 0xb8);
         assert_eq!(out[1], 56);
         assert_eq!(out.len(), 58);
@@ -363,13 +314,12 @@ mod tests {
         let data = erc20_transfer_data(&to, 1_000_000);
 
         assert_eq!(data.len(), 4 + 32 + 32);
-        // The published selector for transfer(address,uint256).
+
         assert_eq!(hex(&data[..4]), "a9059cbb");
-        // Address is right-aligned in its 32 byte word.
+
         assert_eq!(&data[4..16], &[0u8; 12]);
         assert_eq!(&data[16..36], &to);
-        // Amount is right-aligned in its own 32 byte word, so the low 16
-        // bytes hold it and the high 16 are padding.
+
         assert_eq!(&data[36..52], &[0u8; 16]);
         assert_eq!(u128::from_be_bytes(data[52..68].try_into().unwrap()), 1_000_000);
     }
@@ -393,7 +343,6 @@ mod tests {
         assert!(tx_hash(&signed).starts_with("0x"));
         assert_eq!(tx_hash(&signed).len(), 66);
 
-        // Deterministic signing: the same transaction signs identically.
         assert_eq!(hex(&sign(&k, &tx).unwrap()), hex(&signed));
     }
 }

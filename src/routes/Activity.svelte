@@ -42,7 +42,6 @@
     return (Number(entry.amountMinor) / 10 ** meta.decimals) * quote.price;
   }
 
-  // Entries arrive newest first, so grouping in order preserves that.
   const grouped = $derived(
     wallet.activity.reduce<{ label: string; items: ActivityEntry[] }[]>((acc, entry) => {
       const label = dayLabel(entry.timestamp);

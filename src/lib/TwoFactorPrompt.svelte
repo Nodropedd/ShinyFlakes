@@ -1,14 +1,5 @@
 <script lang="ts">
-  // The step-up gate, shown before anything worth stopping for.
-  //
-  // Whether it asks at all is the core's decision, not this component's: it
-  // asks stepUpChallenge what is outstanding. The code is TOTP, computed
-  // offline from a secret on the user's phone, so nothing about it crosses a
-  // network. The seed phrase stays available as a fallback, since proving the
-  // seed is at least as strong as any code.
-  //
-  // On success it calls onpassed; the caller re-runs its action, which now
-  // finds a valid pass waiting.
+
   import { ipc, type Challenge, type GuardedAction } from "./ipc";
 
   let {
@@ -17,9 +8,9 @@
     onpassed,
     oncancel,
   }: {
-    /** A short phrase for the copy, e.g. "reveal your seed phrase". */
+
     purpose: string;
-    /** Which guarded action this is, so the core can say what it needs. */
+
     action?: GuardedAction;
     onpassed: () => void;
     oncancel: () => void;
@@ -27,7 +18,6 @@
 
   let challenge = $state<Challenge | null>(null);
 
-  /// Reloads what is outstanding, and finishes if nothing is.
   async function advance() {
     try {
       challenge = await ipc.stepUpChallenge(action);
@@ -53,8 +43,6 @@
   let lockedUntil = $state<number | null>(null);
   let now = $state(Math.floor(Date.now() / 1000));
 
-  // A clock, running only while a lockout counts down, so the button can
-  // re-enable itself the moment it lifts.
   $effect(() => {
     if (lockedUntil == null) return;
     const t = setInterval(() => (now = Math.floor(Date.now() / 1000)), 500);
@@ -74,7 +62,7 @@
       const res = await ipc.verify2fa(code.trim());
       switch (res.status) {
         case "ok":
-          // Not necessarily finished: "both" may still want the other one.
+
           await advance();
           return;
         case "wrong":

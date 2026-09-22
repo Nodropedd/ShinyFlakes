@@ -25,32 +25,23 @@
     initial: AssetId | null;
     onclose: () => void;
     onsent: () => void;
-    /** Fills the recipient in advance. Still editable, and still shown in
-     *  full, so a prefilled address is never a hidden one. */
+
     presetTo?: string | null;
     presetNote?: string | null;
   } = $props();
 
-  // Chains whose signing is implemented. The rest appear but cannot be
-  // picked, so the gap is visible rather than hidden behind an empty list.
-  // Monero only becomes sendable once the local wallet daemon is configured,
-  // because the signing happens there rather than here.
   const SENDABLE = $derived<AssetId[]>(
     settings.moneroReady
       ? ["SOL", "BTC", "LTC", "ETH", "TRON", "USDC", "USDT", "XMR"]
       : ["SOL", "BTC", "LTC", "ETH", "TRON", "USDC", "USDT"],
   );
 
-  // Mounted fresh on each open, so this is a starting point rather than a
-  // binding. Skipping straight to the form only makes sense when the asset
-  // can actually be sent.
   let chosen = $state<AssetId | null>(
     untrack(() => (initial && SENDABLE.includes(initial) ? initial : null)),
   );
   let to = $state(untrack(() => presetTo ?? ""));
   let amount = $state("");
 
-  // Stablecoins live on several chains; the rest have a single home.
   const isToken = $derived(chosen === "USDC" || chosen === "USDT");
   const NETWORKS: { id: NetworkId; name: string; coin: string }[] = [
     { id: "SOL", name: "Solana", coin: "SOL" },
@@ -83,8 +74,6 @@
     return NETWORKS.find((x) => x.id === n)?.coin ?? "";
   }
 
-  // Coin control. Only Bitcoin-style chains hold discrete outputs to choose
-  // between; account chains have a single balance and nothing to pick.
   const HAS_COINS: AssetId[] = ["BTC", "LTC"];
 
   let coins = $state<Spendable[]>([]);
@@ -101,9 +90,6 @@
   const meta = $derived(chosen ? BY_ID[chosen] : null);
   const price = $derived(chosen ? (wallet.prices[chosen]?.price ?? null) : null);
 
-  // The amount box can take either the coin or a cash figure. Whichever is
-  // typed, the transaction is always built from a coin amount, so the cash
-  // case is converted here and the result shown before anything is signed.
   let denom = $state<"coin" | "fiat">("coin");
 
   const coinAmount = $derived.by(() => {
@@ -112,8 +98,7 @@
 
     const value = Number(typed);
     if (price == null || price <= 0 || !Number.isFinite(value)) return "";
-    // Eight places is past the point where a cash-entered amount means
-    // anything, and keeps the conversion clear of floating point noise.
+
     return (value / price).toFixed(Math.min(meta?.decimals ?? 8, 8));
   });
 
@@ -124,9 +109,6 @@
     return denom === "coin" ? coins * price : coins;
   });
 
-  // The amount's value in the display currency, which sets the creator-fee
-  // tier. When the currency is dollars, the default, this is exact; otherwise
-  // the under-five threshold is applied in the chosen currency.
   const fiatValue = $derived.by(() => {
     if (price == null) return null;
     const coins = Number(coinAmount);
@@ -140,7 +122,7 @@
 
   function swapDenomination() {
     if (!meta) return;
-    // Carry the typed value across rather than clearing it.
+
     if (price != null && price > 0 && amount.trim() !== "") {
       const value = Number(amount);
       if (Number.isFinite(value)) {
@@ -154,7 +136,6 @@
     reset();
   }
 
-  // Only what the wallet actually holds is worth offering.
   const options = $derived(wallet.funded);
 
   const pickedCoins = $derived(coins.filter((c) => picked.has(c.outpoint)));
@@ -163,8 +144,6 @@
     pickedCoins.reduce((sum, c) => sum + BigInt(c.valueMinor), 0n).toString(),
   );
 
-  // Spending outputs from two sub-wallets in one transaction proves on chain
-  // that the same person owns both. Worth saying before, not after.
   const wouldLink = $derived(
     new Set(pickedCoins.map((c) => c.keyIndex)).size > 1,
   );
@@ -190,7 +169,7 @@
         if (chosen === current) coins = list;
       })
       .catch(() => {
-        /* choosing coins is optional; the wallet will select for you */
+
       });
   });
 
@@ -202,11 +181,11 @@
     ipc
       .sendLimits(current, net)
       .then((l) => {
-        // Ignore a result that arrived after the asset or network changed.
+
         if (chosen === current && network === net) limits = l;
       })
       .catch(() => {
-        /* the preview reports the real problem */
+
       });
   });
 
@@ -216,7 +195,6 @@
     error = null;
   }
 
-  /** Plain decimal for an input box: no grouping separators. */
   function plain(minor: string, decimals: number) {
     return formatAmount(minor, decimals).replace(/,/g, "");
   }
@@ -239,8 +217,7 @@
       const minor = toMinor(coinAmount, meta.decimals);
 
       if (chosen === "XMR") {
-        // The Monero wallet prices a transfer by building the real thing and
-        // discarding it, so the fee here is the actual fee.
+
         const priced = await ipc.xmrPreview(
           settings.moneroEndpoint,
           to.trim(),

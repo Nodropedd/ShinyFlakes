@@ -1,3 +1,5 @@
+//! Vault key storage.
+
 use std::sync::Mutex;
 
 #[cfg(not(target_os = "android"))]
@@ -6,38 +8,14 @@ use keyring::Entry;
 use crate::crypto::aead::{VaultKey, KEY_LEN};
 use crate::error::{Result, WalletError};
 
-/// Where this app may write, set once at startup.
-///
-/// Only Android needs it: the desktops all have a credential store that is
-/// addressed by name, so nothing there has to know a path.
 #[cfg(target_os = "android")]
 static APP_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/// Tells the Android backend which directory is ours. Called once, at setup.
 #[cfg(target_os = "android")]
 pub fn set_app_dir(dir: std::path::PathBuf) {
     let _ = APP_DIR.set(dir);
 }
 
-/// Android's stand-in for a credential store.
-///
-/// # What this is, and what it is not
-///
-/// Android has no Secret Service and no credential store a process can
-/// address by name, so the vault key is a file in the directory Android gives
-/// this application. That directory is sandboxed: no other app can read it
-/// without root, and it is excluded from backup below via the manifest.
-///
-/// It is **weaker than the desktop backends**, and the difference is worth
-/// stating plainly. On Windows and Linux the key is held by the OS and
-/// released to a logged-in session; here it is a file that anyone with the
-/// unlocked device, root, or a forensic image can read. Hardware-backed
-/// storage would mean the Android Keystore over JNI, which this does not do
-/// yet.
-///
-/// What closes that gap today is the optional **vault passphrase**, which is
-/// already mixed with this key in `store::derive`. On a phone it stops being
-/// optional in spirit: without one the key and the vault sit side by side.
 #[cfg(target_os = "android")]
 mod android_store {
     use super::*;
@@ -61,7 +39,7 @@ mod android_store {
     pub fn set(account: &str, secret: &[u8]) -> Result<()> {
         let path = key_file(account)?;
         std::fs::write(&path, secret).map_err(|e| WalletError::Keychain(e.to_string()))?;
-        // Owner-only, so nothing that shares the uid can read it either.
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -82,9 +60,6 @@ mod android_store {
 const SERVICE: &str = "ShinyFlakes";
 const ACCOUNT: &str = "vault-key";
 
-/// What to call the credential store in text the user reads. Naming the real
-/// one beats a vague "OS credential store" when someone has to go looking for
-/// the entry, so it follows the backend the build is compiled against.
 #[cfg(windows)]
 pub const STORE_NAME: &str = "Windows credential store";
 #[cfg(target_os = "linux")]
@@ -92,22 +67,10 @@ pub const STORE_NAME: &str = "system keyring";
 #[cfg(target_os = "android")]
 pub const STORE_NAME: &str = "app-private storage";
 
-/// The account the vault key lives under.
-///
-/// Test builds get a per-process account instead of the real one. Without
-/// that, running the suite reads and writes the credential store of whoever
-/// ran it: `load_or_create` mints a key when it finds none, so a test run on
-/// a machine that also *uses* this wallet could replace the real key and
-/// leave the real config.dat undecryptable. A test must never be able to do
-/// that.
 fn account() -> String {
     #[cfg(test)]
     {
-        // Per *test*, not per process. `inactivity::wipe` calls `forget`,
-        // which deletes the entry — on a shared account that yanks the key
-        // out from under whatever else is running in parallel, and the config
-        // it had just sealed stops decrypting. The thread name is the test
-        // name under the standard harness.
+
         let thread = std::thread::current();
         format!(
             "test-{}-{}-{}",
@@ -127,11 +90,6 @@ fn entry_for(account: &str) -> Result<Entry> {
     Entry::new(SERVICE, account).map_err(|e| WalletError::Keychain(e.to_string()))
 }
 
-/// Reads a stored secret, or `None` when there is no entry yet.
-///
-/// The two backends report "not there" differently — one as an error variant,
-/// the other as a missing file — so both are normalised here and every caller
-/// below reads the same shape.
 fn get_secret(account: &str) -> Result<Option<Vec<u8>>> {
     #[cfg(target_os = "android")]
     {
@@ -169,14 +127,13 @@ fn delete_secret(account: &str) -> Result<()> {
     {
         match entry_for(account)?.delete_credential() {
             Ok(()) => Ok(()),
-            // Already gone is the state we wanted.
+
             Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(WalletError::Keychain(e.to_string())),
         }
     }
 }
 
-/// Turns stored bytes into a key, refusing anything the wrong length.
 fn key_from(bytes: &[u8]) -> Result<VaultKey> {
     if bytes.len() != KEY_LEN {
         return Err(WalletError::Keychain(
@@ -188,19 +145,6 @@ fn key_from(bytes: &[u8]) -> Result<VaultKey> {
     Ok(VaultKey::from_bytes(key))
 }
 
-/// The vault key lives in the OS credential store, not in anything the user
-/// types. That means the encrypted vault on disk is useless to someone who
-/// copies the file off this machine without also holding the OS account.
-///
-/// Called per vault read or write rather than cached, so the key sits in
-/// process memory for as short a window as possible.
-/// Serialises the read-then-maybe-create below.
-///
-/// The credential store has no compare-and-swap, so two threads arriving at
-/// once could both see no entry, both mint a key, and both write — leaving
-/// whatever the loser sealed unreadable under the winner's key. Rare, but the
-/// damage is a vault that will not open, so the window is closed rather than
-/// tolerated.
 static MINTING: Mutex<()> = Mutex::new(());
 
 pub fn load_or_create() -> Result<VaultKey> {
@@ -218,8 +162,6 @@ pub fn load_or_create() -> Result<VaultKey> {
     }
 }
 
-/// Reads the key only if one already exists. Unlocking must not silently mint
-/// a new key, since that would decrypt nothing and look like vault damage.
 pub fn load() -> Result<VaultKey> {
     match get_secret(&account())? {
         Some(bytes) => key_from(&bytes),
@@ -227,22 +169,12 @@ pub fn load() -> Result<VaultKey> {
     }
 }
 
-/// Removes the vault key from the OS credential store.
-///
-/// Without the key the encrypted vault file is unreadable forever, so this is
-/// only ever called alongside deleting that file, and only after the user has
-/// confirmed in writing.
 pub fn forget() -> Result<()> {
     delete_secret(&account())
 }
 
 const MONERO_ACCOUNT: &str = "monero-wallet-password";
 
-/// Password for the Monero wallet file, generated once and kept in the OS
-/// credential store.
-///
-/// The user never sees or types it. Losing it costs nothing permanent: the
-/// account can be recreated from the seed at any time.
 pub fn monero_password() -> Result<String> {
     if let Some(bytes) = get_secret(MONERO_ACCOUNT)? {
         if let Ok(existing) = String::from_utf8(bytes) {
@@ -264,13 +196,6 @@ pub fn monero_password() -> Result<String> {
 mod tests {
     use super::*;
 
-    /// Proves the credential store this build is compiled against actually
-    /// answers: the Windows credential store, or the Secret Service on Linux.
-    /// Ignored because it needs a real desktop session — on Linux a running
-    /// gnome-keyring or KWallet with an unlocked collection, which CI has not
-    /// got. Uses its own account so it never touches the real vault key.
-    ///
-    /// `cargo test keychain_round_trips -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn keychain_round_trips() {

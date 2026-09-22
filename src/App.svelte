@@ -16,10 +16,7 @@
     </p>
   </div>
 {:else if session.screen === "loading"}
-  <!-- Boot takes long enough on a phone to look like a crash: the vault is
-       read, the credential store is asked for a key, and on a cold start the
-       webview itself is still warming up. A blank panel for that long reads
-       as a hang, so it says the name and shows that something is moving. -->
+
   <div class="boot">
     <div class="boot-mark"><Wordmark size={34} /></div>
     <div class="boot-bar"><span></span></div>
@@ -42,7 +39,7 @@
   }
 
   .boot-mark {
-    /* Comes up rather than appearing, so a fast boot does not flash. */
+
     animation: boot-in 420ms var(--ease) both;
   }
 
@@ -55,9 +52,6 @@
     background: var(--border);
   }
 
-  /* A travelling segment rather than a percentage: nothing here knows how
-     far along it is, and a bar that claims 60% when it cannot tell is a
-     worse lie than one that only says "still working". */
   .boot-bar span {
     position: absolute;
     top: 0;
@@ -89,7 +83,6 @@
     }
   }
 
-  /* Respect the system setting: the sweep is decoration, not information. */
   @media (prefers-reduced-motion: reduce) {
     .boot-mark,
     .boot-bar span {

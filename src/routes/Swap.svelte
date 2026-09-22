@@ -1,9 +1,5 @@
 <script lang="ts">
-  // Cross-chain swaps through ChangeNOW. The wallet quotes a rate, creates a
-  // trade to get a deposit address, then pays a normal local-signed send to it
-  // with no creator fee. The proceeds land at an address this wallet owns.
-  // Nothing here custodies funds; ChangeNOW is one more endpoint, Tor-routed
-  // like the rest.
+
   import AssetIcon from "../lib/AssetIcon.svelte";
   import Address from "../lib/Address.svelte";
   import { ASSETS, BY_ID, formatAmount, toMinor } from "../lib/assets";
@@ -11,8 +7,6 @@
   import { settings } from "../lib/settings.svelte";
   import { wallet } from "../lib/wallet.svelte";
 
-  // Only coins this wallet can actually send may be the source. Monero counts
-  // only once its daemon is up, since funding it needs the local bridge.
   const FROM_ASSETS = $derived<AssetId[]>([
     "BTC",
     "LTC",
@@ -25,7 +19,6 @@
   let to = $state<AssetId>("LTC");
   let amountInput = $state("");
 
-  // Keep the two sides distinct, and keep `from` within what can be sent.
   $effect(() => {
     if (!FROM_ASSETS.includes(from)) from = FROM_ASSETS[0];
     if (to === from) to = ASSETS.find((a) => a.id !== from)?.id ?? "BTC";
@@ -49,8 +42,6 @@
   let statusText = $state<string | null>(null);
   let polling = $state(false);
 
-  // Any change to the terms invalidates a quote or a trade built on the old
-  // ones, so a stale deposit address can never be paid.
   function reset() {
     quote = null;
     trade = null;
@@ -122,7 +113,6 @@
     }
   }
 
-  // Once funded, poll the trade until it reaches a terminal state.
   const TERMINAL = ["finished", "expired", "failed", "refunded"];
 
   $effect(() => {
@@ -138,7 +128,7 @@
         statusText = s;
         if (TERMINAL.includes(s.toLowerCase())) stop = true;
       } catch {
-        /* leave the last known status; try again next tick */
+
       } finally {
         polling = false;
       }

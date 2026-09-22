@@ -14,16 +14,15 @@
   } = $props();
 
   const ITEMS: { id: View; label: string; path: string }[] = [
-    // Wallet / card outline
+
     { id: "portfolio", label: "Portfolio", path: "M3 7h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 7l2-3h14l2 3M16 13h2" },
-    // Two arrows, one each way
+
     { id: "swap", label: "Swap", path: "M7 4v13M7 4L4 7M7 4l3 3M17 20V7M17 20l-3-3M17 20l3-3" },
-    // Stacked containers
-    // Fragments
+
     { id: "utxo", label: "UTXO", path: "M4 5h6v6H4zM14 5h6v3h-6zM4 15h4v4H4zM12 12h8v7h-8z" },
-    // Clock
+
     { id: "activity", label: "Activity", path: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 7v5l3 2" },
-    // Sliders
+
     { id: "settings", label: "Settings", path: "M4 7h10M18 7h2M4 17h4M12 17h8M16 5v4M8 15v4" },
   ];
 </script>
@@ -110,8 +109,6 @@
     color: var(--text);
   }
 
-  /* The accent marks the current section. It is the one place in the chrome
-     that carries colour, so the eye lands on it immediately. */
   .item.active svg {
     color: var(--accent);
   }
@@ -120,11 +117,6 @@
     margin-top: auto;
   }
 
-  /* ---- phone ----------------------------------------------------------
-     Portrait has no room for a 208px column beside the content, so the rail
-     becomes a bottom bar: thumb-reachable, and it keeps the labels rather
-     than reducing the sections to icons nobody can identify. The wordmark
-     goes with it — the content below already says which screen this is. */
   @media (max-width: 720px) {
     .sidebar {
       width: 100%;
@@ -133,10 +125,7 @@
       padding: 0;
       border-right: none;
       border-top: 1px solid var(--border);
-      /* Clear of the gesture bar. The inset is the real measurement, but
-         a gesture pill sits in a band a few px tall that reports zero on
-         some devices, so a floor of 10px keeps the labels legible either
-         way. */
+
       padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
     }
 
@@ -164,8 +153,6 @@
       font-size: 10.5px;
     }
 
-    /* A background block across a bar this tight reads as noise, so the
-       current section is marked by colour and a rule above it instead. */
     .item.active {
       background: none;
       box-shadow: inset 0 2px 0 var(--accent);

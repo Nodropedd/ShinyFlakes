@@ -1,8 +1,4 @@
-//! SLIP-0010 key derivation over ed25519, used by Solana.
-//!
-//! Ed25519 has no public parent to public child relationship, so SLIP-0010
-//! defines hardened derivation only. That is why every element of a Solana
-//! path carries an apostrophe.
+//! SLIP-0010 ed25519 derivation.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha512;
@@ -33,8 +29,6 @@ pub fn master(seed: &[u8]) -> Node {
     split(&mac.finalize().into_bytes())
 }
 
-/// One hardened step. `index` is given without the hardening bit; it is added
-/// here so callers cannot forget it.
 pub fn child(parent: &Node, index: u32) -> Node {
     let mut mac =
         HmacSha512::new_from_slice(&parent.chain_code).expect("hmac takes a key of any length");
@@ -44,7 +38,6 @@ pub fn child(parent: &Node, index: u32) -> Node {
     split(&mac.finalize().into_bytes())
 }
 
-/// Walks a whole path of hardened indices from the seed.
 pub fn derive(seed: &[u8], path: &[u32]) -> Node {
     let mut node = master(seed);
     for step in path {
@@ -57,7 +50,6 @@ pub fn derive(seed: &[u8], path: &[u32]) -> Node {
 mod tests {
     use super::*;
 
-    // SLIP-0010 test vector 1 for ed25519, seed 000102030405060708090a0b0c0d0e0f.
     const SEED: [u8; 16] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
         0x0f,

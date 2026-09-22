@@ -11,17 +11,12 @@
 
   let { initial, onclose }: { initial: AssetId | null; onclose: () => void } = $props();
 
-  // The dialog is mounted fresh each time it opens, so the asset it starts on
-  // is genuinely a starting point and should not track later changes.
   let chosen = $state<AssetId | null>(untrack(() => initial));
   let filter = $state("");
 
   const meta = $derived(chosen ? BY_ID[chosen] : null);
   const entry = $derived(chosen ? wallet.addresses[chosen] : null);
 
-  // Reusing one address links every payment ever sent to it. On chains that
-  // support it the wallet walks forward to one that has never been seen, and
-  // falls back to the account address when that lookup fails.
   let fresh = $state<ReceiveAddress | null>(null);
   let finding = $state(false);
   let freshError = $state<string | null>(null);
@@ -48,7 +43,6 @@
       });
   });
 
-  // The rotated address when there is one, otherwise the account address.
   const shownAddress = $derived(fresh?.address ?? entry?.address ?? null);
 
   const matches = $derived(

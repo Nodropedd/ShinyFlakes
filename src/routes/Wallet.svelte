@@ -13,9 +13,6 @@
 
   const VIEWS: View[] = ["portfolio", "swap", "utxo", "activity", "settings"];
 
-  // The section lives in the URL fragment. Users never see it in a Tauri
-  // window, but it gives back and forward navigation for free and makes a
-  // given screen reachable directly while developing.
   function fromHash(): View {
     const h = location.hash.replace(/^#\/?/, "");
     return (VIEWS as string[]).includes(h) ? (h as View) : "portfolio";
@@ -34,23 +31,11 @@
     return () => removeEventListener("hashchange", sync);
   });
 
-  // Addresses load immediately; balances poll once the user has consented.
-  //
-  // onMount, not $effect. An effect re-runs whenever any state it read while
-  // running changes, and start() reads settings.torEnabled and then, through
-  // startTor and startMonero, reads and writes their "starting" flags. So
-  // once Tor or Monero had been switched on, every finished start re-ran the
-  // effect: stop(), start(), and another tor_start or monero_setup_run —
-  // about once a second, killing a working Tor whenever one liveness check
-  // failed and restarting the Monero daemon mid-scan. This has to run once.
   onMount(() => {
     wallet.start();
     return () => wallet.stop();
   });
 
-  // A wallet that sat unopened past the chosen limit asks for a second factor
-  // on the way back in. Unlocking already needed the seed; this is the check
-  // for when the machine itself may be the thing that changed hands.
   let dormantPrompt = $state(false);
 
   $effect(() => {
@@ -62,8 +47,7 @@
 
   async function dormantPassed() {
     try {
-      // False would mean the core still wants something, so the prompt stays
-      // up rather than quietly letting the session through.
+
       if (await ipc.clearDormantStepUp()) dormantPrompt = false;
     } catch {
       dormantPrompt = false;
@@ -109,9 +93,6 @@
     height: 100%;
   }
 
-  /* Portrait stacks: content first, navigation under the thumb. The reversed
-     column keeps the nav last in the visual order while leaving it first in
-     the DOM, so tab order still reaches it. */
   @media (max-width: 720px) {
     .shell {
       flex-direction: column-reverse;
@@ -127,7 +108,7 @@
 
   @media (max-width: 720px) {
     main {
-      /* Desktop's 40px side gutter eats a tenth of a phone screen. */
+
       padding: 18px 14px 22px;
       padding-top: calc(18px + env(safe-area-inset-top, 0px));
     }

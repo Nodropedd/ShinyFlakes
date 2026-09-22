@@ -1,22 +1,4 @@
-//! Cross-chain swaps through ChangeNOW, a non-custodial exchanger.
-//!
-//! No account of ours and no custody. The wallet asks ChangeNOW for a rate and
-//! a deposit ("payin") address, pays a normal on-chain send to it from the
-//! "from" coin, and ChangeNOW sends the "to" coin straight to an address this
-//! wallet owns. Keys never leave this machine; ChangeNOW is just another remote
-//! endpoint, like the balance and price lookups, and it rides the same Tor
-//! routing when that is on.
-//!
-//! Monetisation is ChangeNOW's own partner commission, attributed to whoever
-//! holds the API key and set once in their dashboard, not an extra output of
-//! ours. The creator fee that ordinary sends carry is deliberately NOT applied
-//! to a swap's funding transaction: it would change the exact deposit amount
-//! the exchange is waiting for and break the swap.
-//!
-//! This targets the ChangeNOW v2 API, which names a coin by a ticker plus an
-//! explicit network — needed to pin our USDC to Solana and our USDT to Tron.
-//! Amounts cross as decimal strings; we convert without floats so a satoshi or
-//! a wei is never lost.
+//! Swaps through ChangeNOW.
 
 use serde_json::Value;
 
@@ -28,9 +10,6 @@ fn net(e: impl std::fmt::Display) -> WalletError {
     WalletError::Network(format!("swap: {e}"))
 }
 
-/// Ticker and network as ChangeNOW names them, per asset. `None` for an asset
-/// ChangeNOW is not asked about. If a pair is ever rejected as unknown, this is
-/// the one table to correct.
 pub fn pair(asset: &str) -> Option<(&'static str, &'static str)> {
     Some(match asset {
         "BTC" => ("btc", "btc"),
@@ -39,15 +18,13 @@ pub fn pair(asset: &str) -> Option<(&'static str, &'static str)> {
         "ETH" => ("eth", "eth"),
         "SOL" => ("sol", "sol"),
         "TRON" => ("trx", "trx"),
-        // Ours are the Solana USDC and the Tron USDT, so the networks are fixed.
+
         "USDC" => ("usdc", "sol"),
         "USDT" => ("usdt", "trx"),
         _ => return None,
     })
 }
 
-/// Smallest-unit decimals per asset, for converting to and from the decimal
-/// strings ChangeNOW speaks.
 pub fn decimals(asset: &str) -> Option<u32> {
     Some(match asset {
         "BTC" | "LTC" => 8,
@@ -59,7 +36,6 @@ pub fn decimals(asset: &str) -> Option<u32> {
     })
 }
 
-/// A smallest-unit integer string to a plain decimal string, exactly.
 pub fn minor_to_decimal(minor: &str, dp: u32) -> Result<String> {
     let raw = minor.trim();
     if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
@@ -85,8 +61,6 @@ pub fn minor_to_decimal(minor: &str, dp: u32) -> Result<String> {
     }
 }
 
-/// A plain decimal string back to a smallest-unit integer. Rejects more
-/// precision than the asset has, rather than silently dropping it.
 pub fn decimal_to_minor(dec: &str, dp: u32) -> Result<u128> {
     let s = dec.trim();
     let (int, frac) = match s.split_once('.') {
@@ -118,8 +92,6 @@ pub fn decimal_to_minor(dec: &str, dp: u32) -> Result<u128> {
         .map_err(|_| WalletError::Derivation(format!("amount out of range: {dec}")))
 }
 
-/// Like `decimal_to_minor`, but floors extra precision instead of refusing it.
-/// For amounts coming back from ChangeNOW, which the wallet only displays.
 pub fn decimal_to_minor_floor(dec: &str, dp: u32) -> Result<u128> {
     let s = dec.trim();
     let (int, frac) = match s.split_once('.') {
@@ -143,8 +115,6 @@ fn str_field(v: &Value, key: &str) -> String {
     }
 }
 
-/// Turns a non-success ChangeNOW response body into a readable message.
-/// Errors come back as `{"message": "..."}` or `{"error": "..."}`.
 fn api_error(text: &str, status: reqwest::StatusCode) -> WalletError {
     let msg = serde_json::from_str::<Value>(text)
         .ok()
@@ -158,11 +128,9 @@ fn api_error(text: &str, status: reqwest::StatusCode) -> WalletError {
     net(msg)
 }
 
-/// A GET against ChangeNOW, returning the parsed JSON or a readable error.
 async fn get(path: &str, params: &[(&str, String)], api_key: &str) -> Result<Value> {
     let client = crate::chains::rpc::client()?;
-    // Built with the query encoder rather than `.query()`, which this reqwest
-    // build does not expose, so amounts and addresses are escaped correctly.
+
     let url = reqwest::Url::parse_with_params(&format!("{HOST}{path}"), params)
         .map_err(net)?;
     let resp = client
@@ -180,7 +148,6 @@ async fn get(path: &str, params: &[(&str, String)], api_key: &str) -> Result<Val
     serde_json::from_str(&text).map_err(|e| net(format!("unreadable response: {e}")))
 }
 
-/// A POST against ChangeNOW with a JSON body.
 async fn post(path: &str, body: Value, api_key: &str) -> Result<Value> {
     let client = crate::chains::rpc::client()?;
     let resp = client
@@ -199,15 +166,12 @@ async fn post(path: &str, body: Value, api_key: &str) -> Result<Value> {
     serde_json::from_str(&text).map_err(|e| net(format!("unreadable response: {e}")))
 }
 
-/// A rate estimate. `amount_to` is what the "to" side is expected to receive; a
-/// standard-flow swap can settle a little different, which the UI says.
 #[derive(Debug, Clone)]
 pub struct Quote {
     pub amount_to: String,
     pub provider: String,
 }
 
-/// A rate for sending `amount_from` (a decimal string) of one asset into another.
 pub async fn quote(api_key: &str, from: &str, to: &str, amount_from: &str) -> Result<Quote> {
     let (tf, nf) = pair(from).ok_or_else(|| net(format!("{from} cannot be swapped")))?;
     let (tt, nt) = pair(to).ok_or_else(|| net(format!("{to} cannot be swapped")))?;
@@ -234,7 +198,6 @@ pub async fn quote(api_key: &str, from: &str, to: &str, amount_from: &str) -> Re
     })
 }
 
-/// A created trade: where to deposit, how much, and where the proceeds go.
 #[derive(Debug, Clone)]
 pub struct Trade {
     pub id: String,
@@ -247,8 +210,6 @@ pub struct Trade {
     pub status: String,
 }
 
-/// Creates the trade. `payout` is an address this wallet owns on the "to"
-/// chain; `refund` is one it owns on the "from" chain, used if the swap fails.
 pub async fn create(
     api_key: &str,
     from: &str,
@@ -294,7 +255,7 @@ pub async fn create(
         amount_to: str_field(&v, "toAmount"),
         payout_address: str_field(&v, "payoutAddress"),
         provider: "ChangeNOW".to_string(),
-        // A fresh exchange has no on-chain deposit yet; the UI polls status.
+
         status: {
             let s = str_field(&v, "status");
             if s.is_empty() { "waiting".to_string() } else { s }
@@ -302,7 +263,6 @@ pub async fn create(
     })
 }
 
-/// The current status of a trade by its id.
 pub async fn status(api_key: &str, id: &str) -> Result<String> {
     let v = get("/exchange/by-id", &[("id", id.to_string())], api_key).await?;
     let s = str_field(&v, "status");
@@ -319,17 +279,17 @@ mod tests {
 
     #[test]
     fn minor_to_decimal_places_the_point_correctly() {
-        // 1 BTC.
+
         assert_eq!(minor_to_decimal("100000000", 8).unwrap(), "1");
-        // 1.5 SOL.
+
         assert_eq!(minor_to_decimal("1500000000", 9).unwrap(), "1.5");
-        // 0.001 SOL, shorter than the decimal places.
+
         assert_eq!(minor_to_decimal("1000000", 9).unwrap(), "0.001");
-        // One satoshi.
+
         assert_eq!(minor_to_decimal("1", 8).unwrap(), "0.00000001");
-        // Zero.
+
         assert_eq!(minor_to_decimal("0", 8).unwrap(), "0");
-        // A wei-scale value keeps every digit.
+
         assert_eq!(
             minor_to_decimal("1234567890123456789", 18).unwrap(),
             "1.234567890123456789"
@@ -356,7 +316,7 @@ mod tests {
 
     #[test]
     fn extra_precision_is_refused_not_truncated() {
-        // 9 places into an 8-place asset would drop a satoshi silently.
+
         assert!(decimal_to_minor("0.000000001", 8).is_err());
     }
 

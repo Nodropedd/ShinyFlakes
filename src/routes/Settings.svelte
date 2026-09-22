@@ -26,20 +26,16 @@
     type StaySignedIn,
   } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
+  import { updates } from "../lib/updates.svelte";
+  import { untrack } from "svelte";
   import { DEFAULT_MONERO_ENDPOINT } from "../lib/settings.svelte";
 
-  // Sensitive reveals are deliberate: a typed confirmation, then two-factor
-  // when it is on, and the secret is dropped again on leaving the screen.
   const REVEAL_WORD = "REVEAL";
 
-  // A reveal waiting on two-factor. When set, the prompt is shown; passing it
-  // re-runs the stored action, which now finds a valid pass in the core.
   let twoFactorFor = $state<
     null | { purpose: string; run: () => Promise<void> }
   >(null);
 
-  // Runs a reveal, and if the core answers that two-factor is needed, opens the
-  // prompt instead of failing. Every other error the run itself reports.
   async function guarded(purpose: string, run: () => Promise<void>) {
     try {
       await run();
@@ -55,12 +51,10 @@
   async function twoFactorPassed() {
     const pending = twoFactorFor;
     twoFactorFor = null;
-    // The run reports its own non-2FA errors; a repeat 2FA prompt would be an
-    // odd edge, so it is simply swallowed and the user can retry.
+
     if (pending) await pending.run().catch(() => {});
   }
 
-  // Monero keys.
   let askingKeys = $state(false);
   let confirmWord = $state("");
   let moneroKeys = $state<MoneroKeys | null>(null);
@@ -90,7 +84,6 @@
     keysError = null;
   }
 
-  // Seed phrase.
   let askingSeed = $state(false);
   let seedWord = $state("");
   let seedPhrase = $state<string | null>(null);
@@ -120,17 +113,12 @@
     seedError = null;
   }
 
-  // Nothing sensitive lingers when the screen is left.
   $effect(() => () => {
     hideKeys();
     hideSeed();
     twoFactorFor = null;
   });
 
-  // A settings file that will not decrypt blocks every panel below. It holds
-  // no seed, so it is recoverable — but never automatically: resetting it
-  // would switch two-factor off, which is precisely what an attacker who can
-  // corrupt a file would want.
   let settingsBroken = $state(false);
   let resetting = $state(false);
 
@@ -156,7 +144,6 @@
   let twoFactorBusy = $state(false);
   let twoFactorError = $state<string | null>(null);
 
-  // When the wallet stops to ask for a second factor.
   let stepUp = $state<StepUpView | null>(null);
   let stepUpBusy = $state(false);
   let stepUpError = $state<string | null>(null);
@@ -187,8 +174,6 @@
     void refreshStepUp();
   });
 
-  // Two-factor is TOTP: a secret scanned into an authenticator app. No email,
-  // no server. The email panel above is only for optional reveal notices.
   let twoFactor = $state<TwoFactorState | null>(null);
   let totpSetup = $state<TotpSetup | null>(null);
   let totpCode = $state("");
@@ -198,7 +183,7 @@
       .twoFactorState()
       .then((s) => (twoFactor = s))
       .catch(() => {
-        /* the panel shows its off state */
+
       });
   });
 
@@ -263,11 +248,8 @@
     await wallet.setCurrency(code);
   }
 
-  // Reading the accent back for the colour input: when none is set the input
-  // still needs a value, so it shows the dark-theme default.
   const accentValue = $derived(settings.accent ?? DEFAULT_ACCENT);
 
-  // Vault passphrase, a second factor on top of the seed.
   let curPass = $state("");
   let newPass = $state("");
   let confirmPass = $state("");
@@ -305,20 +287,22 @@
     }
   }
 
-  // Staying signed in: opening the app goes straight to the wallet.
+  $effect(() => {
+    const allowed = wallet.connected;
+    untrack(() => void updates.checkIfAllowed(allowed));
+  });
+
   let staySignedIn = $state<StaySignedIn | null>(null);
   let stayBusy = $state(false);
   let stayError = $state<string | null>(null);
 
-  // Read again whenever the passphrase changes, since setting one turns it
-  // off and removing one makes it possible again.
   $effect(() => {
     void hasPassphrase;
     ipc
       .staySignedInState()
       .then((s) => (staySignedIn = s))
       .catch(() => {
-        /* the button reports anything that matters */
+
       });
   });
 
@@ -335,8 +319,6 @@
     }
   }
 
-  // Turning it on leaves the wallet open to whoever starts the app next, so it
-  // goes through two-factor like revealing the seed. Turning it off does not.
   async function setStaySignedIn(on: boolean) {
     if (stayBusy) return;
     if (on) {
@@ -346,7 +328,6 @@
     }
   }
 
-  // Clearing this machine after a long absence.
   const PERIODS: { months: number; label: string }[] = [
     { months: 0, label: "Never" },
     { months: 3, label: "3 months" },
@@ -362,7 +343,7 @@
       .inactivityCheck()
       .then((i) => (inactivity = i))
       .catch(() => {
-        /* the section stays hidden rather than guessing */
+
       });
   });
 
@@ -382,7 +363,6 @@
     }
   }
 
-  // Deleting this wallet by hand.
   const DELETE_WORD = "DELETE";
   let askingDelete = $state(false);
   let deleteWord = $state("");
@@ -401,12 +381,9 @@
     }
   }
 
-  // Tipping.
   let donations = $state<Donation[]>([]);
   let tipping = $state<Donation | null>(null);
 
-  // Only chains this wallet can actually sign for. Monero is included once
-  // its daemon is up, same as anywhere else.
   const SENDABLE_TIPS = $derived<AssetId[]>(
     settings.moneroReady
       ? ["BTC", "LTC", "ETH", "SOL", "XMR"]
@@ -418,12 +395,10 @@
       .donationAddresses()
       .then((list) => (donations = list))
       .catch(() => {
-        /* the section simply stays empty */
+
       });
   });
 
-  // Whether Tor is already on this device. On Android it always is — it
-  // ships inside the app — so there is no download to warn about.
   let torInstalled = $state(false);
 
   $effect(() => {
@@ -431,11 +406,10 @@
       .torState()
       .then((s) => (torInstalled = s.installed))
       .catch(() => {
-        /* only decides whether the download note shows */
+
       });
   });
 
-  // One-button Monero setup.
   let setup = $state<MoneroSetup | null>(null);
   let settingUp = $state(false);
   let setupStep = $state("Working");
@@ -447,7 +421,7 @@
       .moneroSetupState()
       .then((s) => (setup = s))
       .catch(() => {
-        /* the button will report anything that matters */
+
       });
   });
 
@@ -460,8 +434,7 @@
       const result = await ipc.moneroSetupRun(settings.moneroDaemon);
       setup = result;
       if (result.running) {
-        // The bridge always listens here, so the endpoint is not a question
-        // the user should have to answer.
+
         settings.setMoneroEndpoint(DEFAULT_MONERO_ENDPOINT);
         await wallet.refresh();
       }
@@ -477,7 +450,6 @@
     setup = await ipc.moneroSetupState();
   }
 
-  // Manual bridge, kept for anyone already running their own daemon.
   let endpoint = $state(settings.moneroEndpoint || DEFAULT_MONERO_ENDPOINT);
   let nodeStatus = $state<MoneroStatus | null>(null);
   let nodeError = $state<string | null>(null);
@@ -490,7 +462,7 @@
     try {
       const result = await ipc.xmrStatus(endpoint.trim());
       nodeStatus = result;
-      // Only remember an endpoint that actually answered for this account.
+
       if (result.matchesWallet) {
         settings.setMoneroEndpoint(endpoint.trim());
         await wallet.refresh();
@@ -513,6 +485,35 @@
   <header>
     <h1>Settings</h1>
   </header>
+
+  <section class="card">
+    <h2>Updates</h2>
+    {#if updates.info?.available}
+      <p class="ok-note">
+        Update available: version {updates.info.latest}. You have {updates.info.current}.
+      </p>
+      <div class="control">
+        <button class="btn btn-primary" onclick={() => updates.openDownloads()}>Update</button>
+      </div>
+      <p class="hint-note">
+        Opens the download page. Install it the way you installed this one; your
+        wallet and settings stay as they are.
+      </p>
+    {:else if updates.info}
+      <p class="muted">You have the latest version, {updates.info.current}.</p>
+    {:else}
+      <p class="muted">
+        Asks GitHub whether a newer version is out, through Tor when that is on.
+        {wallet.connected ? "" : "Once you connect, this happens on its own."}
+      </p>
+      <div class="control">
+        <button class="btn" disabled={updates.checking} onclick={() => updates.check()}>
+          {updates.checking ? "Checking" : "Check for updates"}
+        </button>
+      </div>
+    {/if}
+    {#if updates.error}<p class="kerr">{updates.error}</p>{/if}
+  </section>
 
   <section class="card">
     <h2>Appearance</h2>

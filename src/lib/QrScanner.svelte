@@ -13,14 +13,10 @@
   let raf: number | undefined;
   const canvas = document.createElement("canvas");
 
-  // Wallet QR codes are often a payment URI like "bitcoin:bc1...?amount=1".
-  // The send box wants the bare address, so the scheme and any query are
-  // stripped off.
   function extractAddress(raw: string): string {
     let text = raw.trim();
     const colon = text.indexOf(":");
-    // Only treat it as a scheme when what precedes the colon looks like one,
-    // never for an address that happens to contain a colon.
+
     if (colon > 0 && colon < 12 && /^[a-zA-Z]+$/.test(text.slice(0, colon))) {
       text = text.slice(colon + 1);
     }
@@ -60,7 +56,7 @@
         video: { facingMode: "environment" },
       });
       scanning = true;
-      // The element only exists once scanning is true, so wait a tick.
+
       await Promise.resolve();
       if (video) {
         video.srcObject = stream;
@@ -68,8 +64,7 @@
         raf = requestAnimationFrame(decodeFrame);
       }
     } catch (e) {
-      // No camera, denied, or unsupported in this webview. The image path
-      // below still works, so this is a note, not a dead end.
+
       error =
         "Camera unavailable. Allow camera access, or scan a saved image instead.";
       scanning = false;
@@ -113,8 +108,6 @@
     scanning = false;
   }
 
-  // Tearing the camera down when the component goes away matters: a live
-  // camera light left on would be alarming in a wallet.
   $effect(() => () => stop());
 </script>
 

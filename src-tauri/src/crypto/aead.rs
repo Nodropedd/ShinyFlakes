@@ -1,3 +1,5 @@
+//! AES-256-GCM seal and open.
+
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
 use rand::RngCore;
@@ -8,9 +10,6 @@ use crate::error::{Result, WalletError};
 pub const KEY_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
-/// AES-256-GCM key for everything stored locally: the seed, SMTP credentials,
-/// settings. Held only for the duration of a single vault
-/// read or write, then dropped and zeroed.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct VaultKey([u8; KEY_LEN]);
 
@@ -25,7 +24,6 @@ impl VaultKey {
         Self(bytes)
     }
 
-    /// Only the keychain module calls this, to hand the key to the OS store.
     pub fn expose(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
@@ -34,8 +32,6 @@ impl VaultKey {
         Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.0))
     }
 
-    /// Returns nonce || ciphertext || tag. A fresh random nonce per call, so
-    /// rewriting the vault never reuses one under the same key.
     pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);

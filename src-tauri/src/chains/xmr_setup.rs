@@ -1,18 +1,4 @@
-//! One-button Monero setup.
-//!
-//! Downloads Monero's official wallet daemon, verifies it, and starts it
-//! against this wallet's own account. The account is created by asking the
-//! daemon over localhost, so the spend key goes straight from memory into
-//! Monero's own process and is never written to a file or shown on screen.
-//!
-//! The download is pinned to one release and one hash. A fetched checksum
-//! list would only prove the list and the file came from the same place; a
-//! hash compiled into the binary proves it is the exact build this code was
-//! written against.
-//!
-//! On Android the same official release arrives inside the APK instead,
-//! checked against its pinned hash when the app is built, because Android will
-//! not run a downloaded program; see `crate::bundled`.
+//! Monero daemon lifecycle.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,8 +12,6 @@ use crate::error::{Result, WalletError};
 
 const VERSION: &str = "v0.18.5.1";
 
-/// The CLI release is built per platform, and Monero ships the two in
-/// different container formats: a .zip for Windows, a .tar.bz2 for Linux.
 #[cfg(windows)]
 const ARCHIVE: &str = "monero-win-x64-v0.18.5.1.zip";
 #[cfg(windows)]
@@ -35,41 +19,28 @@ const URL: &str = "https://downloads.getmonero.org/cli/monero-win-x64-v0.18.5.1.
 #[cfg(target_os = "linux")]
 const URL: &str = "https://downloads.getmonero.org/cli/monero-linux-x64-v0.18.5.1.tar.bz2";
 
-/// Published by the Monero project at getmonero.org/downloads/hashes.txt and
-/// checked against the real download before being written here.
 #[cfg(windows)]
 const SHA256: &str = "cf2ae8273977697d9ef2031c7337b781e6e5936578f602444b2990a173a2437d";
 #[cfg(target_os = "linux")]
 const SHA256: &str = "22a7dda7b0cb699fdd6b7674c3b4a4465b337cc98a54983523b759e1e7cc9958";
 
-/// Folder inside the archive.
 #[cfg(windows)]
 const INNER: &str = "monero-x86_64-w64-mingw32-v0.18.5.1";
 #[cfg(target_os = "linux")]
 const INNER: &str = "monero-x86_64-linux-gnu-v0.18.5.1";
 
-/// The wallet daemon inside that folder.
 #[cfg(windows)]
 const RPC_BIN: &str = "monero-wallet-rpc.exe";
 #[cfg(all(unix, not(target_os = "android")))]
 const RPC_BIN: &str = "monero-wallet-rpc";
-/// The name `scripts/android-binaries.mjs` packs it into the APK under. The
-/// installer only extracts files named like libraries, so it has to be one.
+
 #[cfg(target_os = "android")]
 const RPC_BIN: &str = "libmonero_wallet_rpc.so";
 
-/// A public node to read the chain from until the user runs their own.
-///
-/// It never sees the keys and cannot spend anything, but it does see this
-/// machine's address and which parts of the chain are requested. That is
-/// stated in the interface rather than buried here.
 pub const DEFAULT_DAEMON: &str = "xmr-node.cakewallet.com:18081";
 
 pub const RPC_PORT: u16 = 18082;
 
-/// Roughly a month of blocks. A freshly derived account cannot hold anything
-/// older than the day it was first used, so scanning from further back only
-/// wastes time; a month of slack covers a wallet set up a while ago.
 const RESTORE_SLACK_BLOCKS: u64 = 21_600;
 
 fn oops(what: &str, e: impl std::fmt::Display) -> WalletError {
@@ -79,11 +50,11 @@ fn oops(what: &str, e: impl std::fmt::Display) -> WalletError {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupState {
-    /// The daemon binary is present and verified.
+
     pub installed: bool,
-    /// A wallet file for this account exists.
+
     pub wallet_exists: bool,
-    /// The bridge is running right now.
+
     pub running: bool,
     pub version: String,
 }
@@ -97,7 +68,6 @@ fn binary(app_data: &Path) -> PathBuf {
     install_dir(app_data).join(INNER).join(RPC_BIN)
 }
 
-/// The wallet daemon, if it is there to run.
 fn installed_binary(app_data: &Path) -> Option<PathBuf> {
     #[cfg(target_os = "android")]
     {
@@ -128,17 +98,12 @@ pub fn state(app_data: &Path, running: bool) -> SetupState {
     }
 }
 
-// ---------- install ----------
-
-/// On Android there is nothing to fetch: the daemon came inside the APK,
-/// checked against its pinned hash when the app was built.
 #[cfg(target_os = "android")]
 pub async fn install(app_data: &Path) -> Result<()> {
     if installed_binary(app_data).is_some() {
         return Ok(());
     }
-    // Monero builds its Android release for ARM only, so on anything else the
-    // honest answer is that there is no official build, not a packaging slip.
+
     let why = if cfg!(any(target_arch = "aarch64", target_arch = "arm")) {
         "This copy of ShinyFlakes was built without Monero's wallet daemon inside it, \
          and Android does not let an app fetch a program afterwards. Build it with \
@@ -150,8 +115,6 @@ pub async fn install(app_data: &Path) -> Result<()> {
     Err(WalletError::Unsupported(why.into()))
 }
 
-/// Downloads the official release, checks it against the pinned hash, and
-/// unpacks it. Refuses to unpack anything whose hash does not match.
 #[cfg(not(target_os = "android"))]
 pub async fn install(app_data: &Path) -> Result<()> {
     if binary(app_data).is_file() {
@@ -194,8 +157,6 @@ pub async fn install(app_data: &Path) -> Result<()> {
         return Err(oops("unpacking", "the wallet daemon was not in the archive"));
     }
 
-    // The tar carries a mode and the zip does not, but relying on either
-    // leaves a daemon that only fails at spawn time with "permission denied".
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -206,12 +167,6 @@ pub async fn install(app_data: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Unpacks the release into `dir`, refusing any entry whose path would escape
-/// it — that is how a crafted archive overwrites files elsewhere on the disk.
-///
-/// The zip reader needs to seek, so the Windows archive goes to disk first;
-/// the tar reader streams, so the Linux one is decompressed straight from
-/// memory.
 #[cfg(windows)]
 fn unpack(dir: &Path, bytes: &[u8]) -> Result<()> {
     let archive = dir.join(ARCHIVE);
@@ -223,7 +178,6 @@ fn unpack(dir: &Path, bytes: &[u8]) -> Result<()> {
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| oops("reading an entry", e))?;
 
-        // enclosed_name refuses paths that would escape the folder.
         let Some(relative) = entry.enclosed_name() else {
             continue;
         };
@@ -277,9 +231,6 @@ fn unpack(dir: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-// ---------- running ----------
-
-/// Starts the daemon with no wallet open, so it can be asked to make one.
 pub fn spawn(app_data: &Path, daemon: &str) -> Result<Child> {
     let Some(exe) = installed_binary(app_data) else {
         return Err(oops("start", "the Monero wallet daemon is not installed"));
@@ -299,8 +250,7 @@ pub fn spawn(app_data: &Path, daemon: &str) -> Result<Child> {
         .arg("--disable-rpc-login")
         .arg("--daemon-address")
         .arg(daemon)
-        // Deliberately no --trusted-daemon: the node above is someone
-        // else's, so the wallet does the sensitive work itself.
+
         .arg("--log-level")
         .arg("0")
         .stdin(Stdio::null())
@@ -310,17 +260,11 @@ pub fn spawn(app_data: &Path, daemon: &str) -> Result<Child> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // No console window: this is a background helper, not something the
-        // user should have to keep on screen.
+
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    // Android starts an app's processes in / with no HOME. Monero writes its
-    // log beside its own executable by default, which here is the read-only
-    // folder the installer extracted it to, and keeps its shared ring
-    // database under HOME. Give both a home in the app's own folder, and keep
-    // the log small: a phone has no reason to hold fifty 100 MB logs.
     #[cfg(target_os = "android")]
     {
         let logs = install_dir(app_data);
@@ -344,12 +288,6 @@ fn pid_file(app_data: &Path) -> PathBuf {
     install_dir(app_data).join("daemon.pid")
 }
 
-/// Ends a daemon left behind by an earlier run.
-///
-/// The app restarts whenever it is rebuilt, which loses the handle to any
-/// child it started. That orphan keeps the wallet file open, and the next
-/// attempt then fails with "opened by another wallet program". The process id
-/// is recorded on disk so it can be found again across restarts.
 fn kill_stale(app_data: &Path) {
     let path = pid_file(app_data);
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -357,8 +295,7 @@ fn kill_stale(app_data: &Path) {
     };
 
     if let Ok(pid) = text.trim().parse::<u32>() {
-        // By id rather than by name, so a Monero wallet the user runs
-        // themselves is never touched.
+
         #[cfg(windows)]
         {
             let _ = Command::new("taskkill")
@@ -382,17 +319,10 @@ fn record_pid(app_data: &Path, pid: u32) {
     let _ = std::fs::write(pid_file(app_data), pid.to_string());
 }
 
-/// Ends whichever daemon is running for this wallet, including one started
-/// by an earlier run of the app.
 pub fn stop_any(app_data: &Path) {
     kill_stale(app_data);
 }
 
-/// Gets a daemon running, one way or another.
-///
-/// If something is already answering on the port it is used as it is, rather
-/// than starting a second one that could not bind anyway. Otherwise any
-/// orphan is cleaned up and a fresh daemon is started.
 pub async fn ensure_running(
     app_data: &Path,
     daemon: &str,
@@ -410,13 +340,6 @@ pub async fn ensure_running(
     Ok(Some(child))
 }
 
-/// Waits for the daemon to answer, since it takes a moment to bind.
-///
-/// A phone gets a minute rather than the desktop's sixteen seconds. The daemon
-/// is a 30 MB program, and on a slow or older phone loading it and opening its
-/// ring database can take longer than the desktop allowance on its own, which
-/// surfaced as "did not come up in time" for a daemon that was about to. The
-/// loop returns as soon as it answers, so the extra only costs when needed.
 pub async fn wait_until_ready(endpoint: &str) -> Result<()> {
     const ATTEMPTS: u32 = if cfg!(target_os = "android") { 150 } else { 40 };
     for attempt in 0..ATTEMPTS {
@@ -431,12 +354,6 @@ pub async fn wait_until_ready(endpoint: &str) -> Result<()> {
     Err(oops("start", "the wallet daemon did not come up in time"))
 }
 
-// ---------- the account ----------
-
-/// Creates the wallet file from this account's keys, if it is not there.
-///
-/// The keys travel over the loopback RPC into Monero's own process. They are
-/// never written to disk by this program and never shown.
 #[allow(clippy::too_many_arguments)]
 pub async fn ensure_wallet(
     app_data: &Path,
@@ -451,9 +368,7 @@ pub async fn ensure_wallet(
         match super::xmr_rpc::open_wallet(endpoint, "account", password).await {
             Ok(()) => return Ok(()),
             Err(e) => {
-                // The daemon may already have it open, in which case asking
-                // again is refused but everything works. Balance is the
-                // honest test of that.
+
                 if super::xmr_rpc::balance(endpoint).await.is_ok() {
                     return Ok(());
                 }
@@ -465,8 +380,6 @@ pub async fn ensure_wallet(
         }
     }
 
-    // Asked of the node directly: the wallet daemon cannot answer this
-    // until a wallet is open, and there is not one yet.
     let height = daemon_height(daemon)
         .await
         .unwrap_or(0)
@@ -477,17 +390,9 @@ pub async fn ensure_wallet(
     )
     .await?;
 
-    // Creating the wallet also opens it and takes a lock on the keys file.
-    // Asking to open it again makes the daemon collide with its own lock,
-    // which Windows reports as a sharing violation and Monero relays as
-    // "opened by another wallet program". So there is nothing left to do.
     Ok(())
 }
 
-/// Current chain tip according to the node, used to pick a restore height.
-///
-/// This is a plain read from a public node and involves no keys, so it is
-/// not held to the loopback rule the wallet daemon is.
 async fn daemon_height(daemon: &str) -> Result<u64> {
     #[derive(serde::Deserialize)]
     struct Info {
@@ -511,14 +416,10 @@ async fn daemon_height(daemon: &str) -> Result<u64> {
     Ok(info.height)
 }
 
-/// A random password for the wallet file, kept in the OS credential store
-/// beside the vault key so the user never has to know or type it.
 pub fn wallet_password() -> Result<String> {
     crate::keychain::monero_password()
 }
 
-/// Writes a short note next to the wallet explaining what it is, for anyone
-/// who finds the folder later and wonders.
 pub fn write_readme(app_data: &Path) {
     let store = crate::keychain::STORE_NAME;
     let note = format!(

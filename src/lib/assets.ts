@@ -1,18 +1,10 @@
-// Static asset registry. Names, symbols, precision and accent colours are
-// fixed properties of each chain, so they live here rather than crossing the
-// IPC bridge. Balances are a separate matter and come from the core once
-// chain connectivity exists.
+// Coin metadata and amount formatting.
 
 import type { AssetId } from "./ipc";
 
-// Coin marks bundled rather than hotlinked. Most come from the
-// cryptocurrency-icons set (CC0 1.0, see assets/coins/LICENSE.md); Monero and
-// Solana use their own current brand marks instead, since the set carries
-// older versions of both.
 import btcLogo from "../assets/coins/btc.svg";
 import ltcLogo from "../assets/coins/ltc.svg";
-// Monero ships its mark as artwork rather than a path set, so the official
-// file is used directly. It is the current two-tone version.
+
 import xmrLogo from "../assets/coins/xmr.svg";
 import ethLogo from "../assets/coins/eth.svg";
 import solLogo from "../assets/coins/sol.svg";
@@ -23,16 +15,15 @@ import usdtLogo from "../assets/coins/usdt.svg";
 export interface AssetMeta {
   id: AssetId;
   name: string;
-  /** Ticker shown next to amounts. */
+
   ticker: string;
-  /** Bundled SVG logo. */
+
   logo: string;
-  /** Decimal places between the smallest unit and one whole coin. */
+
   decimals: number;
-  /** True for real UTXO chains, which are the only ones with a fragmentation
-   *  view. */
+
   utxo: boolean;
-  /** CSS custom property holding this asset's accent. */
+
   accent: string;
 }
 
@@ -51,10 +42,6 @@ export const BY_ID: Record<AssetId, AssetMeta> = Object.fromEntries(
   ASSETS.map((a) => [a.id, a]),
 ) as Record<AssetId, AssetMeta>;
 
-/** Formats a smallest-unit amount for display. Input is a decimal string
- *  because satoshi and atomic-unit counts exceed what a JS number holds
- *  exactly. Trailing zeros are trimmed, but at least two places are kept so
- *  amounts line up in a column. */
 export function formatAmount(minor: string, decimals: number): string {
   const negative = minor.startsWith("-");
   const digits = (negative ? minor.slice(1) : minor).replace(/\D/g, "") || "0";
@@ -69,9 +56,6 @@ export function formatAmount(minor: string, decimals: number): string {
   return `${negative ? "-" : ""}${grouped}.${fraction}`;
 }
 
-/** Whole units as typed by a person into smallest units, without floats.
- *  "0.001" at 9 decimals becomes "1000000". Throws on anything that is not a
- *  plain decimal number or that carries more precision than the asset has. */
 export function toMinor(input: string, decimals: number): string {
   const text = input.trim();
   if (!/^\d*(\.\d*)?$/.test(text) || text === "" || text === ".") {

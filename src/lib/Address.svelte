@@ -1,21 +1,14 @@
 <script lang="ts">
   import { copyAndVerify } from "./clipboard";
 
-  // The derivation path used to appear in the tooltip. It means nothing to
-  // anyone reading an address and only added noise, so only the address is
-  // shown now.
   let { value }: { value: string; path?: string | null } = $props();
 
   let copied = $state(false);
   let hijacked = $state(false);
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  // Without this, navigating away within the feedback window leaves a timer
-  // holding a reference to a destroyed component.
   $effect(() => () => clearTimeout(timer));
 
-  // Middle-truncated so both ends stay visible. The ends are what people
-  // actually check when comparing an address against another screen.
   const short = $derived(
     value.length > 24 ? `${value.slice(0, 12)}\u2026${value.slice(-8)}` : value,
   );
@@ -24,8 +17,7 @@
     hijacked = false;
     const outcome = await copyAndVerify(value);
     if (outcome === "mismatch") {
-      // Something replaced the clipboard right after the copy. The classic
-      // sign of address-swapping malware. Warn loudly rather than flash OK.
+
       hijacked = true;
       clearTimeout(timer);
       timer = setTimeout(() => (hijacked = false), 8000);

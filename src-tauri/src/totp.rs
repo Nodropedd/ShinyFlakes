@@ -1,15 +1,4 @@
-//! Time-based one-time passwords (RFC 6238), the serverless second factor.
-//!
-//! This is real two-factor with no email and no network at all: a secret is
-//! generated here, shown once as a QR code, and scanned into an authenticator
-//! app (Google Authenticator, Aegis, and the rest). The app then shows a fresh
-//! six-digit code every thirty seconds, computed from that shared secret and
-//! the clock. To confirm a reveal the user types the current code, and this
-//! module checks it against the same computation.
-//!
-//! The second factor is genuine because the secret lives on a separate device
-//! (the phone). Someone sitting at an unlocked machine does not have it, which
-//! is the whole point. Standard HMAC-SHA1, six digits, thirty-second step.
+//! TOTP codes.
 
 use hmac::{Hmac, Mac};
 use rand::RngCore;
@@ -19,21 +8,18 @@ use crate::error::{Result, WalletError};
 
 const DIGITS: u32 = 6;
 const PERIOD: i64 = 30;
-/// How many steps of clock skew each way are accepted, so a phone a few seconds
-/// off, or a code entered right on a boundary, still passes.
+
 const SKEW: i64 = 1;
 const SECRET_LEN: usize = 20;
 
 const BASE32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-/// A fresh random secret, as the base32 an authenticator app imports.
 pub fn new_secret() -> String {
     let mut bytes = [0u8; SECRET_LEN];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     base32_encode(&bytes)
 }
 
-/// The otpauth URI an authenticator scans from a QR code.
 pub fn provisioning_uri(secret: &str, account: &str) -> String {
     format!(
         "otpauth://totp/ShinyFlakes:{account}?secret={secret}&issuer=ShinyFlakes\
@@ -41,7 +27,6 @@ pub fn provisioning_uri(secret: &str, account: &str) -> String {
     )
 }
 
-/// The code for a secret at a Unix time. Used to verify what the user types.
 fn code_at(secret_bytes: &[u8], unix: i64) -> u32 {
     let counter = (unix / PERIOD) as u64;
     hotp(secret_bytes, counter)
@@ -52,7 +37,6 @@ fn hotp(secret: &[u8], counter: u64) -> u32 {
     mac.update(&counter.to_be_bytes());
     let hs = mac.finalize().into_bytes();
 
-    // Dynamic truncation, per RFC 4226.
     let offset = (hs[hs.len() - 1] & 0x0f) as usize;
     let bin = ((hs[offset] as u32 & 0x7f) << 24)
         | ((hs[offset + 1] as u32) << 16)
@@ -61,8 +45,6 @@ fn hotp(secret: &[u8], counter: u64) -> u32 {
     bin % 10u32.pow(DIGITS)
 }
 
-/// Whether `input` is the valid code for `secret` right now, allowing a little
-/// clock skew. `secret` is the base32 shown at setup.
 pub fn verify(secret: &str, input: &str) -> Result<bool> {
     verify_at(secret, input, now())
 }
@@ -134,12 +116,11 @@ fn base32_decode(s: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    // The RFC 6238 reference secret: ASCII "12345678901234567890".
     const REF: &[u8] = b"12345678901234567890";
 
     #[test]
     fn matches_the_rfc6238_vectors() {
-        // Six-digit truncation of the published SHA1 vectors.
+
         assert_eq!(code_at(REF, 59), 287082);
         assert_eq!(code_at(REF, 1111111109), 81804);
         assert_eq!(code_at(REF, 1234567890), 5924);
@@ -148,7 +129,7 @@ mod tests {
 
     #[test]
     fn base32_round_trips() {
-        // The reference secret's known base32 form.
+
         assert_eq!(base32_encode(REF), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
         assert_eq!(base32_decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").unwrap(), REF);
         for len in 1..=32 {
@@ -164,7 +145,7 @@ mod tests {
         let t = 1_700_000_000;
         let code = format!("{:06}", code_at(&bytes, t));
         assert!(verify_at(&secret, &code, t).unwrap());
-        // A wrong code fails.
+
         assert!(!verify_at(&secret, "000000", t).unwrap());
     }
 
@@ -173,10 +154,10 @@ mod tests {
         let secret = new_secret();
         let bytes = base32_decode(&secret).unwrap();
         let t = 1_700_000_000;
-        // A code computed one step ago is accepted when entered now (skew).
+
         let earlier = format!("{:06}", code_at(&bytes, t - PERIOD));
         assert!(verify_at(&secret, &earlier, t).unwrap());
-        // But two steps is too far.
+
         let older = format!("{:06}", code_at(&bytes, t - 3 * PERIOD));
         assert!(!verify_at(&secret, &older, t).unwrap());
     }

@@ -1,11 +1,4 @@
-//! Where a tip goes.
-//!
-//! These are fixed, compiled in, and shown in full before anything is sent.
-//! A wallet that could quietly change its own payout address would be a very
-//! different kind of program.
-//!
-//! Every address here is checked by the same parser that validates a
-//! recipient the user types, so a typo cannot ship.
+//! Built-in donation addresses.
 
 use serde::Serialize;
 
@@ -14,13 +7,10 @@ use serde::Serialize;
 pub struct Donation {
     pub asset: String,
     pub address: String,
-    /// Set when the asset is a token and the address belongs to its host
-    /// chain rather than to the token itself.
+
     pub host: Option<String>,
 }
 
-/// USD Coin lives on Solana in this wallet and Tether on Tron, so tips in
-/// either go to the address for the chain that actually carries them.
 pub fn addresses() -> Vec<Donation> {
     let sol = "7oW2bBM5iU4At2ZBJqv81zG7dV2XGWeBHdDYozdZojnb";
     let tron = "TKoYYY3jnZHUJhgS8HodUXKzwhZQjDyeLW";
@@ -63,13 +53,10 @@ mod tests {
             .unwrap_or_else(|| panic!("{asset} missing from the donation list"))
     }
 
-    /// Each address is run through the parser that would validate it if a
-    /// user typed it as a recipient. A wrong one fails here rather than
-    /// silently sending a tip nowhere.
     #[test]
     fn bitcoin_address_is_spendable_to() {
         let script = script_pubkey_for(&find("BTC").address, Chain::Bitcoin).unwrap();
-        // Native segwit: a zero byte, a length, then a 20 byte program.
+
         assert_eq!(script[0], 0x00);
         assert_eq!(script.len(), 22);
     }
@@ -77,21 +64,21 @@ mod tests {
     #[test]
     fn litecoin_address_is_spendable_to() {
         let script = script_pubkey_for(&find("LTC").address, Chain::Litecoin).unwrap();
-        // Legacy pay-to-pubkey-hash on Litecoin.
+
         assert_eq!(script[0], 0x76);
         assert_eq!(script.len(), 25);
     }
 
     #[test]
     fn litecoin_address_is_not_a_bitcoin_one() {
-        // Sending Litecoin to a Bitcoin address, or the reverse, loses it.
+
         assert!(script_pubkey_for(&find("LTC").address, Chain::Bitcoin).is_err());
         assert!(script_pubkey_for(&find("BTC").address, Chain::Litecoin).is_err());
     }
 
     #[test]
     fn ethereum_address_passes_its_checksum() {
-        // Mixed case, so EIP-55 applies and a single wrong character fails.
+
         let parsed = crate::chains::eth::parse_address(&find("ETH").address).unwrap();
         assert_eq!(
             crate::chains::eth::to_checksum(&parsed),

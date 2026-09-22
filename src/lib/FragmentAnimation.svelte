@@ -1,34 +1,22 @@
 <script lang="ts">
   import { untrack } from "svelte";
 
-  // Splitting: a hammer strikes a block, it shatters, and the shards drop
-  // into separate bags and stay there.
-  // Forming: the reverse. Shards lift out of the bags, converge, and the
-  // block comes back whole.
-  //
-  // Named "status" rather than "state": a prop called state shadows the
-  // $state rune inside this component.
-
   let {
     pieces,
     status,
     direction = "split",
   }: {
     pieces: number;
-    /** "working" while broadcasting, then how it ended. */
+
     status: "working" | "done" | "failed";
     direction?: "split" | "form";
   } = $props();
 
-  // More than eight shards stops reading as a split and starts reading as
-  // noise, so the drawing caps even when the real count is higher.
   const shown = $derived(Math.max(2, Math.min(pieces, 8)));
   const shards = $derived(Array.from({ length: shown }, (_, i) => i));
 
   type Stage = "raise" | "strike" | "scatter" | "bagged";
 
-  // The direction is fixed for the life of this component, so the starting
-  // stage is genuinely a starting value rather than something to track.
   let stage = $state<Stage>(untrack(() => (direction === "form" ? "bagged" : "raise")));
 
   $effect(() => {
@@ -38,7 +26,7 @@
       timers.push(setTimeout(() => (stage = "scatter"), 620));
       timers.push(setTimeout(() => (stage = "bagged"), 1400));
     } else {
-      // Reassembling runs the other way: out of the bags, then whole.
+
       timers.push(setTimeout(() => (stage = "scatter"), 500));
       timers.push(setTimeout(() => (stage = "raise"), 1300));
     }
@@ -47,7 +35,6 @@
 
   const bagWidth = $derived(250 / shown);
 
-  /** Centre of the bag a given shard belongs to. */
   function bagCentre(i: number) {
     return 35 + bagWidth * i + bagWidth / 2;
   }
@@ -62,7 +49,6 @@
          ? `Splitting the balance into ${pieces} pieces`
          : `Reassembling ${pieces} pieces into one`}>
 
-    <!-- The hammer, only for splitting. -->
     {#if direction === "split"}
       <g class="hammer {stage}">
         <rect x="150" y="-6" width="9" height="52" rx="4" fill="var(--text-faint)" />
@@ -70,7 +56,6 @@
       </g>
     {/if}
 
-    <!-- The whole block, before it breaks or after it re-forms. -->
     {#if stage === "raise" || stage === "strike"}
       <g class="block" class:hit={stage === "strike"} class:formed={whole}>
         <rect x="112" y="58" width="96" height="44" rx="6"
@@ -81,8 +66,6 @@
       </g>
     {/if}
 
-    <!-- The bags. Drawn before the shards so the shards read as being in
-         front of the bag mouth, then the bag front is drawn over them. -->
     <g class="bags" class:ready={inBags}>
       {#each shards as i (i)}
         {@const x = 35 + bagWidth * i + bagWidth * 0.12}
@@ -94,8 +77,6 @@
       {/each}
     </g>
 
-    <!-- Shards. In the bagged stage they sit inside their bag rather than
-         disappearing, which is what a bag of pieces should look like. -->
     {#if stage !== "raise" || direction === "form"}
       {#each shards as i (i)}
         <polygon
@@ -111,7 +92,6 @@
       {/each}
     {/if}
 
-    <!-- Bag fronts, over the shards, so they look contained. -->
     <g class="bags front" class:ready={inBags}>
       {#each shards as i (i)}
         {@const x = 35 + bagWidth * i + bagWidth * 0.12}
@@ -153,7 +133,7 @@
 
   .block { transition: transform 120ms var(--ease), opacity 300ms var(--ease); }
   .block.hit { transform: translateY(3px) scaleY(0.94); transform-origin: 160px 102px; }
-  /* Re-forming: the block fades back in rather than appearing abruptly. */
+
   .block.formed { animation: reform 420ms var(--ease); }
 
   @keyframes reform {
@@ -168,11 +148,11 @@
       opacity 260ms var(--ease);
     transition-delay: var(--d);
   }
-  /* Flung outward, level with where the bags are.  */
+
   .shard.scattered { transform: translate(var(--cx), 96px) rotate(150deg); }
-  /* Resting inside its bag. */
+
   .shard.bagged { transform: translate(var(--cx), 163px) rotate(200deg); }
-  /* Absorbed back into the whole block. */
+
   .shard.gone { transform: translate(160px, 80px) scale(0.4); opacity: 0; }
 
   .bags g { opacity: 0.4; transition: opacity 300ms var(--ease); transition-delay: var(--d); }
@@ -181,8 +161,6 @@
   .caption { margin: 0; font-size: 12.5px; color: var(--text-muted); }
   .failed .caption { color: var(--danger); }
 
-  /* Decoration only: anyone who has asked their system for less motion gets
-     the end state without the movement. */
   @media (prefers-reduced-motion: reduce) {
     .hammer, .block, .shard, .bags g {
       animation: none !important;

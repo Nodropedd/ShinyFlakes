@@ -1,13 +1,4 @@
-//! Bridge to a Monero wallet running on this machine.
-//!
-//! Monero balances cannot be read from an address, and spending needs ring
-//! signatures and range proofs. Rather than reimplement that, this talks to
-//! `monero-wallet-rpc`, the official wallet daemon, over localhost.
-//!
-//! That keeps the promise the rest of the wallet makes: no third party is
-//! involved, because the process being asked is one the user runs themselves.
-//! The cryptography stays with the implementation the Monero project
-//! maintains, which is where it belongs.
+//! Monero wallet-RPC calls.
 
 use std::time::Duration;
 
@@ -15,11 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, WalletError};
 
-/// Where monero-wallet-rpc listens by default.
 pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:18082/json_rpc";
 
-/// Scanning can take a while on a wallet that has just been restored, so this
-/// is far more patient than the other chains.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 fn client() -> Result<reqwest::Client> {
@@ -44,10 +32,6 @@ struct RpcEnvelope<T> {
     error: Option<RpcError>,
 }
 
-/// Rejects anything that is not a local address.
-///
-/// A remote wallet daemon would hold the spend key, so pointing this at one
-/// would hand someone else the money. Only loopback is accepted.
 fn check_local(endpoint: &str) -> Result<()> {
     let host = endpoint
         .split("://")
@@ -72,8 +56,7 @@ async fn call<T: serde::de::DeserializeOwned>(
     method: &str,
     params: serde_json::Value,
 ) -> Result<T> {
-    // An empty setting means "wherever it normally lives", so the caller does
-    // not have to know the port.
+
     let endpoint = if endpoint.trim().is_empty() {
         DEFAULT_ENDPOINT
     } else {
@@ -89,8 +72,7 @@ async fn call<T: serde::de::DeserializeOwned>(
         .send()
         .await
         .map_err(|e| {
-            // The usual failure is simply that nothing is listening, and the
-            // raw connection error does not say what to do about it.
+
             WalletError::Network(format!(
                 "Could not reach monero-wallet-rpc at {endpoint}. Is it running? ({e})"
             ))
@@ -108,16 +90,12 @@ async fn call<T: serde::de::DeserializeOwned>(
     }
 }
 
-// ---------- lifecycle ----------
-
 #[derive(Deserialize)]
 struct VersionResult {
     #[allow(dead_code)]
     version: u32,
 }
 
-/// Cheapest call that proves the daemon is listening. Works with no wallet
-/// open, which is how it is used while waiting for startup.
 pub async fn ping(endpoint: &str) -> Result<()> {
     let _: VersionResult = call(endpoint, "get_version", serde_json::json!({})).await?;
     Ok(())
@@ -126,10 +104,6 @@ pub async fn ping(endpoint: &str) -> Result<()> {
 #[derive(Deserialize)]
 struct Empty {}
 
-/// Creates a wallet file from an address and its two private keys.
-///
-/// The keys go from this process into Monero over loopback and are not
-/// written anywhere by this program.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_from_keys(
     endpoint: &str,
@@ -157,18 +131,12 @@ pub async fn generate_from_keys(
     Ok(())
 }
 
-/// Writes the wallet cache to disk and closes it.
-///
-/// Killing the daemon outright cannot lose money, since that lives on the
-/// chain and the keys come from the seed, but it can leave the scan cache
-/// half-written and force a slow rescan. Asking first avoids that.
 pub async fn close_wallet(endpoint: &str) -> Result<()> {
     let _: Empty = call(endpoint, "store", serde_json::json!({})).await?;
     let _: Empty = call(endpoint, "close_wallet", serde_json::json!({})).await?;
     Ok(())
 }
 
-/// Opens an existing wallet file. Harmless if it is already open.
 pub async fn open_wallet(endpoint: &str, filename: &str, password: &str) -> Result<()> {
     match call::<Empty>(
         endpoint,
@@ -179,8 +147,7 @@ pub async fn open_wallet(endpoint: &str, filename: &str, password: &str) -> Resu
     {
         Ok(_) => Ok(()),
         Err(e) => {
-            // Asking to open the wallet that is already open is not a
-            // failure worth surfacing.
+
             let text = e.to_string();
             if text.contains("already open") {
                 Ok(())
@@ -190,8 +157,6 @@ pub async fn open_wallet(endpoint: &str, filename: &str, password: &str) -> Resu
         }
     }
 }
-
-// ---------- status ----------
 
 #[derive(Deserialize)]
 struct AddressResult {
@@ -208,14 +173,10 @@ struct HeightResult {
 pub struct WalletStatus {
     pub address: String,
     pub height: u64,
-    /// True when the daemon is serving the account this wallet derives.
+
     pub matches_wallet: bool,
 }
 
-/// Checks the bridge is up and serving the right account.
-///
-/// A wallet file restored from someone else's keys would happily answer, so
-/// the address is compared rather than assumed.
 pub async fn status(endpoint: &str, expected_address: &str) -> Result<WalletStatus> {
     let address: AddressResult =
         call(endpoint, "get_address", serde_json::json!({ "account_index": 0 })).await?;
@@ -228,8 +189,6 @@ pub async fn status(endpoint: &str, expected_address: &str) -> Result<WalletStat
     })
 }
 
-// ---------- balance ----------
-
 #[derive(Deserialize)]
 struct BalanceResult {
     balance: u64,
@@ -239,9 +198,9 @@ struct BalanceResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Balance {
-    /// Everything the wallet can see, in atomic units.
+
     pub total_minor: String,
-    /// The part that is spendable now. Change needs ten blocks to unlock.
+
     pub unlocked_minor: String,
 }
 
@@ -254,8 +213,6 @@ pub async fn balance(endpoint: &str) -> Result<Balance> {
         unlocked_minor: result.unlocked_balance.to_string(),
     })
 }
-
-// ---------- sending ----------
 
 #[derive(Deserialize)]
 struct TransferResult {
@@ -270,17 +227,11 @@ pub struct Transfer {
     pub tx_hash: String,
     pub fee_minor: String,
     pub amount_minor: String,
-    /// The creator fee bundled into this transfer, filled in by the command
-    /// layer since it depends on the amount's value in dollars.
+
     #[serde(default)]
     pub creator_fee_minor: String,
 }
 
-/// Works out what a transfer would cost without sending it.
-///
-/// Monero fees depend on the size of the transaction, which depends on how
-/// many outputs have to be gathered, so it cannot be predicted from the
-/// amount alone. The wallet builds the real thing and reports the fee.
 pub async fn estimate(
     endpoint: &str,
     to: &str,
@@ -288,13 +239,10 @@ pub async fn estimate(
     fee_to: Option<&str>,
     fee_amount: u64,
 ) -> Result<Transfer> {
-    // do_not_relay: built and priced, then thrown away rather than broadcast.
+
     transfer(endpoint, to, amount, fee_to, fee_amount, true).await
 }
 
-/// One or two destinations in a single Monero transaction. The creator fee,
-/// when present, rides alongside the payment as a second destination, which
-/// the daemon supports natively.
 async fn transfer(
     endpoint: &str,
     to: &str,
@@ -327,12 +275,11 @@ async fn transfer(
         tx_hash: result.tx_hash,
         fee_minor: result.fee.to_string(),
         amount_minor: result.amount.to_string(),
-        // Set by the caller, which knows the fee it asked for.
+
         creator_fee_minor: fee_amount.to_string(),
     })
 }
 
-/// Builds, signs and broadcasts. Irreversible.
 pub async fn send(
     endpoint: &str,
     to: &str,
@@ -356,8 +303,7 @@ mod tests {
 
     #[test]
     fn refuses_a_remote_wallet_daemon() {
-        // A remote daemon holds the spend key, so this must never be allowed
-        // through, however it is dressed up.
+
         assert!(check_local("http://192.168.1.50:18082/json_rpc").is_err());
         assert!(check_local("https://monero.example.com/json_rpc").is_err());
         assert!(check_local("http://127.0.0.1.evil.com:18082/json_rpc").is_err());

@@ -1,5 +1,4 @@
-// Display preferences. Purely local and cosmetic, so they live in browser
-// storage rather than the encrypted vault.
+// Settings state.
 
 export const CURRENCIES = [
   { code: "usd", symbol: "$", label: "US Dollar" },
@@ -22,10 +21,8 @@ const MONERO_KEY = "shinyflakes.moneroEndpoint";
 const MONERO_DAEMON_KEY = "shinyflakes.moneroDaemon";
 const TOR_KEY = "shinyflakes.tor";
 
-/// Public node used until someone points this at their own.
 export const DEFAULT_MONERO_DAEMON = "xmr-node.cakewallet.com:18081";
 
-// Where monero-wallet-rpc listens out of the box.
 export const DEFAULT_MONERO_ENDPOINT = "http://127.0.0.1:18082/json_rpc";
 
 export type Theme = "system" | "light" | "dark";
@@ -48,7 +45,7 @@ function write(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
   } catch {
-    /* a lost preference costs nothing */
+
   }
 }
 
@@ -58,7 +55,6 @@ class Settings {
       "usd") as CurrencyCode,
   );
 
-  /** Which unit leads in the asset list: the coin itself or its cash value. */
   denominate = $state<"coin" | "fiat">(
     read(DENOM_KEY, "coin") === "fiat" ? "fiat" : "coin",
   );
@@ -68,11 +64,8 @@ class Settings {
       "dark") as Theme,
   );
 
-  /** Null means whatever the current theme defines, which is the default. */
   accent = $state<string | null>(read(ACCENT_KEY, "") || null);
 
-  /** Empty until the user points the wallet at their Monero daemon. Monero
-   *  stays read-only and unspendable until then. */
   moneroEndpoint = $state<string>(read(MONERO_KEY, ""));
 
   get moneroReady() {
@@ -84,9 +77,6 @@ class Settings {
     write(MONERO_KEY, this.moneroEndpoint);
   }
 
-  /** Which node the Monero wallet reads the chain from. Remembered, so
-   *  starting automatically uses the one that was chosen rather than
-   *  quietly falling back to the public default. */
   moneroDaemon = $state<string>(read(MONERO_DAEMON_KEY, DEFAULT_MONERO_DAEMON));
 
   setMoneroDaemon(daemon: string) {
@@ -94,8 +84,6 @@ class Settings {
     write(MONERO_DAEMON_KEY, this.moneroDaemon);
   }
 
-  /** Whether outbound lookups route through Tor. Remembered, so it comes back
-   *  up on the next unlock rather than the leak silently reopening. */
   torEnabled = $state<boolean>(read(TOR_KEY, "no") === "yes");
 
   setTorEnabled(on: boolean) {
@@ -103,16 +91,11 @@ class Settings {
     write(TOR_KEY, on ? "yes" : "no");
   }
 
-  /** Pushes theme and accent onto the document. Called once at startup and
-   *  again whenever either changes. */
   apply() {
     const root = document.documentElement;
     if (this.theme === "system") root.removeAttribute("data-theme");
     else root.setAttribute("data-theme", this.theme);
 
-    // An explicit accent overrides the theme default; clearing it hands
-    // control back to the stylesheet rather than freezing a dark-theme colour
-    // into the light one.
     if (this.accent) root.style.setProperty("--accent", this.accent);
     else root.style.removeProperty("--accent");
   }
@@ -143,12 +126,11 @@ class Settings {
     write(DENOM_KEY, this.denominate);
   }
 
-  /** Formats a cash amount in the chosen currency. */
   money(value: number) {
     return new Intl.NumberFormat(undefined, {
       style: "currency",
       currency: this.currency.toUpperCase(),
-      // Yen has no minor unit; everything else here has two.
+
       maximumFractionDigits: this.currency === "jpy" ? 0 : 2,
     }).format(value);
   }

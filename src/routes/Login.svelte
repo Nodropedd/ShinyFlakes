@@ -3,8 +3,6 @@
   import { ipc } from "../lib/ipc";
   import { session } from "../lib/session.svelte";
 
-  // "locked" means a vault exists and we are unlocking it.
-  // "cold-start" means no vault yet: import an existing seed or make a new one.
   let mode = $state<"unlock" | "import" | "create">(
     session.status.initialized ? "unlock" : "import",
   );
@@ -14,8 +12,6 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
 
-  // Per the security model: three failed seedphrase attempts wipe keys and
-  // return to cold start rather than re-prompting indefinitely.
   const MAX_ATTEMPTS = 3;
   let attempts = $state(0);
   let remaining = $derived(MAX_ATTEMPTS - attempts);
@@ -23,9 +19,6 @@
   let newMnemonic = $state<string | null>(null);
   let backedUp = $state(false);
 
-  // Once a vault exists the app opens straight into unlock, which left no way
-  // to start over on a machine whose seed was lost. This is that way out, and
-  // it is destructive, so it asks for the word to be typed.
   let forgetting = $state(false);
   let forgetConfirm = $state("");
   const FORGET_WORD = "FORGET";
@@ -48,10 +41,6 @@
     }
   }
 
-  // When the key is gone the vault file is already undecryptable forever, so
-  // deleting it loses nothing recoverable. That is why this skips the FORGET
-  // prompt the ordinary path uses: there is nothing left here to protect, and
-  // the seed rebuilds the wallet in full.
   async function restoreLostKey() {
     if (busy) return;
     busy = true;
@@ -94,15 +83,11 @@
       const err = e as { message?: string; kind?: string };
       error = err.message ?? String(e);
       scrub();
-      // Only a genuine mismatch — a wrong seed or a wrong passphrase — counts
-      // against the limit. A missing key, a keychain fault, or a network blip
-      // is not a guess, and must not march the wallet toward a re-lock.
+
       if (mode === "unlock" && (err.kind === "WrongSeed" || err.kind === "Decrypt")) {
         attempts += 1;
         if (attempts >= MAX_ATTEMPTS) {
-          // logout() drops the in-memory keys and returns here with the
-          // component still mounted, so the counter is cleared by hand.
-          // Nothing on disk is deleted; the wallet simply re-locks.
+
           await session.logout();
           attempts = 0;
           error = "Too many attempts. The wallet re-locked — enter your seed phrase to try again.";
@@ -336,11 +321,7 @@
 <style>
   .screen {
     height: 100%;
-    /* Centring an over-tall panel with align-items pushes its top above the
-       scroll origin, where it cannot be reached. `margin: auto` on the child
-       centres it while it fits and yields to the scroller once it does not,
-       which is the same result without needing the `safe` keyword that only
-       Chrome 93 and later understands. */
+
     display: flex;
     justify-content: center;
     overflow-y: auto;
@@ -426,10 +407,7 @@
 
   .words {
     display: grid;
-    /* Not three fixed columns: a phone cannot give a monospace word like
-       "mushroom" a third of 320px, so the cells overflowed their tracks and
-       took the whole card's width with them. auto-fit against a real minimum
-       gives three across on a desktop card and two on a phone. */
+
     grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
     gap: 8px;
     margin: 0 0 18px;
@@ -441,8 +419,7 @@
     display: flex;
     align-items: baseline;
     gap: 8px;
-    /* Without this a long word sets the track's floor and the grid grows
-       past the card rather than the word wrapping. */
+
     min-width: 0;
     overflow-wrap: anywhere;
     padding: 8px 10px;
