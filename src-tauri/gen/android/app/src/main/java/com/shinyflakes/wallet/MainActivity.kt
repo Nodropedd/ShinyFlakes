@@ -1,62 +1,206 @@
+// Wallet activity
 package com.shinyflakes.wallet
 
+import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.PixelCopy
 import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.webkit.ProxyConfig
 import androidx.webkit.ProxyController
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import androidx.webkit.WebViewRenderProcess
+import androidx.webkit.WebViewRenderProcessClient
+import org.json.JSONTokener
 
-/**
- * The wallet itself. Reached from [StartupActivity], which has already proved
- * the Rust library loads and a WebView exists — the two things whose failure
- * here would leave a black screen with nothing to report.
- */
 class MainActivity : TauriActivity() {
-  override fun onCreate(savedInstanceState: Bundle?) {
-    // Before super.onCreate, so it is in place before the WebView exists.
-    // Here rather than in StartupActivity because Android can recreate this
-    // activity directly, from recents after the process was killed.
-    cutWebViewOffTheNetwork()
+  private val main = Handler(Looper.getMainLooper())
+  private val startedAt = SystemClock.uptimeMillis()
+  private var webView: WebView? = null
+  private var rendererHung = false
+  private var networkLocked = false
+  private var report: View? = null
 
+  override fun onCreate(savedInstanceState: Bundle?) {
+    cutWebViewOffTheNetwork()
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
 
-    // Nothing in this window is for autofill. The first thing it shows is a
-    // box for a seed phrase, and Android offers every field on screen to the
-    // user's autofill service — Google's or a password manager's — to read,
-    // classify and offer to save. Autofill arrived in Android 8, so older
-    // releases have nothing to exclude.
+    // no autofill
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       window.decorView.importantForAutofill =
         View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
     }
+
+    val force = intent?.getBooleanExtra(Diagnostics.FORCE_EXTRA, false) == true
+    main.postDelayed({ checkStarted(force) }, if (force) 4_000L else WATCHDOG_MS)
   }
 
-  /**
-   * The WebView here never needs the network. The app's pages are served
-   * in-process before any request reaches the network stack, calls into Rust
-   * go through postMessage, and every wallet request is made by the Rust core
-   * — through Tor when Tor is on.
-   *
-   * The WebView still makes requests of its own. Finding the seed-phrase box,
-   * it sent the form's shape to content-autofill.googleapis.com, directly and
-   * so around Tor, whatever the autofill settings said. Rather than chase each
-   * such feature, point all of its traffic at a proxy address where nothing
-   * listens, with no direct fallback: anything the WebView tries to fetch for
-   * itself fails at once and never leaves the phone.
-   *
-   * Debug builds are exempt because `tauri android dev` loads the front end
-   * from the Vite server over the network. A WebView too old for proxy
-   * overrides (before 72) is left as it is.
-   */
+  override fun onWebViewCreate(webView: WebView) {
+    this.webView = webView
+    if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE)) {
+      WebViewCompat.setWebViewRenderProcessClient(webView, object : WebViewRenderProcessClient() {
+        override fun onRenderProcessUnresponsive(view: WebView, renderer: WebViewRenderProcess?) {
+          rendererHung = true
+        }
+        override fun onRenderProcessResponsive(view: WebView, renderer: WebViewRenderProcess?) {
+          rendererHung = false
+        }
+      })
+    }
+  }
+
+  // network lock
   private fun cutWebViewOffTheNetwork() {
     if (BuildConfig.DEBUG) return
     if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
-
-    // Port 9 is "discard": reserved, and nothing on a phone listens there.
     val nowhere = ProxyConfig.Builder().addProxyRule("127.0.0.1:9").build()
     ProxyController.getInstance().setProxyOverride(nowhere, { it.run() }, {})
+    networkLocked = true
+  }
+
+  // start-up watchdog
+  private fun checkStarted(force: Boolean) {
+    if (isFinishing || report != null) return
+    val wv = webView
+    if (wv == null) {
+      showReport(
+        "The wallet core never created its window",
+        "Rust did not hand the app a WebView within ${elapsed()} ms."
+      )
+      return
+    }
+
+    var answered = false
+    wv.evaluateJavascript(PROBE) { raw ->
+      answered = true
+      val page = decode(raw)
+      val native = "WebView url=${wv.url} progress=${wv.progress}%"
+      if (!page.startsWith("MOUNTED")) {
+        showReport("The page loaded but the app did not start", "$native\n$page")
+        return@evaluateJavascript
+      }
+      screenLooksBlank { blank ->
+        when {
+          blank == true -> showReport(
+            "The app is running but nothing is being drawn",
+            "$native\n$page\nScreen capture is one flat colour."
+          )
+          force -> showReport("Diagnostics requested", "$native\n$page\nScreen blank: $blank")
+        }
+      }
+    }
+    main.postDelayed({
+      if (!answered) {
+        showReport(
+          "The WebView stopped responding",
+          "No answer from the page's JavaScript within ${PROBE_MS / 1000} s. " +
+            "Renderer unresponsive: $rendererHung. WebView url=${wv.url} progress=${wv.progress}%"
+        )
+      }
+    }, PROBE_MS)
+  }
+
+  // blank screen check
+  private fun screenLooksBlank(done: (Boolean?) -> Unit) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return done(null)
+    val root = window.decorView
+    if (root.width <= 0 || root.height <= 0) return done(null)
+    val bmp = Bitmap.createBitmap(root.width / 4, root.height / 4, Bitmap.Config.ARGB_8888)
+    try {
+      PixelCopy.request(window, bmp, { result ->
+        if (result != PixelCopy.SUCCESS) {
+          bmp.recycle()
+          return@request done(null)
+        }
+        var lo = 255
+        var hi = 0
+        var y = 0
+        while (y < bmp.height) {
+          var x = 0
+          while (x < bmp.width) {
+            val c = bmp.getPixel(x, y)
+            val l = (Color.red(c) * 3 + Color.green(c) * 6 + Color.blue(c)) / 10
+            if (l < lo) lo = l
+            if (l > hi) hi = l
+            x += 6
+          }
+          y += 6
+        }
+        bmp.recycle()
+        done(hi - lo < 12)
+      }, main)
+    } catch (t: Throwable) {
+      bmp.recycle()
+      done(null)
+    }
+  }
+
+  // report
+  private fun showReport(title: String, detail: String) {
+    if (report != null || isFinishing) return
+    val body = buildString {
+      append(detail).append("\n\n")
+      append(Diagnostics.environment(this@MainActivity))
+      append("Net lock: ").append(if (networkLocked) "on" else "off").append('\n')
+      append("Renderer unresponsive: ").append(rendererHung).append('\n')
+      append("Since start: ").append(elapsed()).append(" ms\n\n")
+      append(Diagnostics.recentLog())
+    }
+    val actions = mutableListOf<Pair<String, () -> Unit>>()
+    if (networkLocked) actions += "Retry without the WebView network lock" to { retryUnlocked() }
+    actions += "Dismiss" to { dismissReport() }
+
+    val view = Diagnostics.reportView(this, title, body, actions)
+    addContentView(view, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    report = view
+  }
+
+  private fun dismissReport() {
+    val view = report ?: return
+    (view.parent as? ViewGroup)?.removeView(view)
+    report = null
+  }
+
+  private fun retryUnlocked() {
+    dismissReport()
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) return
+    ProxyController.getInstance().clearProxyOverride({ it.run() }) {
+      main.post {
+        networkLocked = false
+        webView?.reload()
+        main.postDelayed({ checkStarted(false) }, WATCHDOG_MS)
+      }
+    }
+  }
+
+  private fun decode(raw: String?): String = try {
+    (JSONTokener(raw ?: "null").nextValue() as? String) ?: "probe returned ${raw ?: "nothing"}"
+  } catch (t: Throwable) {
+    "probe returned $raw"
+  }
+
+  private fun elapsed() = SystemClock.uptimeMillis() - startedAt
+
+  private companion object {
+    const val WATCHDOG_MS = 10_000L
+    const val PROBE_MS = 3_000L
+    const val PROBE = "(function(){try{" +
+      "var a=document.getElementById('app');" +
+      "return (a&&a.childElementCount>0?'MOUNTED':'EMPTY')" +
+      "+' readyState='+document.readyState" +
+      "+' href='+location.href" +
+      "+' size='+innerWidth+'x'+innerHeight" +
+      "+' problems='+JSON.stringify(window.__SF_PROBLEMS__||[])" +
+      "+' ua='+navigator.userAgent;" +
+      "}catch(e){return 'PROBE-ERROR '+e}})()"
   }
 }

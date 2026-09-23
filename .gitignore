@@ -53,8 +53,9 @@ src-tauri/gen/android/app/src/main/java/com/shinyflakes/*
 src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/*
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/MainActivity.kt
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/StartupActivity.kt
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/Diagnostics.kt
 # Built APKs, and the v4 signature files apksigner writes beside them.
 *.apk
 *.idsig
 # Local video project output, not part of the app.
-brag-output/
+brag-output*/
