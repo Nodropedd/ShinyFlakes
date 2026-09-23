@@ -306,17 +306,38 @@ function asIpcError(e: unknown): IpcError {
   }
 
   console.error("unexpected IPC failure", e);
+  const detail = e instanceof Error ? e.message : String(e);
   return {
     kind: "Unknown",
-    message: "The wallet core did not respond. Restart the app and try again.",
+    message: `The wallet core did not respond (${detail}). Restart the app and try again.`,
   };
 }
 
+const QUICK = new Set(["vault_status", "inactivity_check", "auto_unlock", "generate_mnemonic"]);
+const QUICK_MS = 8000;
+
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await invoke<T>(cmd, args);
+    const answer = invoke<T>(cmd, args);
+    if (!QUICK.has(cmd)) return await answer;
+    return await Promise.race([
+      answer,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject({
+              kind: "Timeout",
+              message: `The wallet core did not answer "${cmd}" within ${QUICK_MS / 1000} s.`,
+            }),
+          QUICK_MS,
+        );
+      }),
+    ]);
   } catch (e) {
     throw asIpcError(e);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

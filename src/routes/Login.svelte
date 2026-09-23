@@ -132,6 +132,10 @@
       <Wordmark size={38} />
     </header>
 
+    {#if session.error}
+      <p class="error">{session.error}</p>
+    {/if}
+
     {#if session.sweptByInactivity}
       <div class="cleared">
         <p>

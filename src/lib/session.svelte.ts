@@ -21,6 +21,7 @@ class Session {
   error = $state<string | null>(null);
 
   async refresh() {
+    this.error = null;
     try {
 
       const inactivity: Inactivity = await ipc.inactivityCheck();

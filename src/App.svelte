@@ -5,6 +5,10 @@
   import { session } from "./lib/session.svelte";
 
   session.refresh();
+
+  $effect(() => {
+    document.documentElement.dataset.screen = session.sweeping ? "sweeping" : session.screen;
+  });
 </script>
 
 {#if session.sweeping}
@@ -24,7 +28,9 @@
 {:else if session.screen === "wallet"}
   <Wallet />
 {:else}
-  <Login />
+  {#key session.screen}
+    <Login />
+  {/key}
 {/if}
 
 <style>
@@ -65,11 +71,9 @@
 
   @keyframes boot-in {
     from {
-      opacity: 0;
       transform: translateY(6px);
     }
     to {
-      opacity: 1;
       transform: none;
     }
   }

@@ -221,7 +221,9 @@ class MainActivity : TauriActivity() {
     const val PROBE_MS = 3_000L
     const val PROBE = "(function(){try{" +
       "var a=document.getElementById('app');" +
-      "return (a&&a.childElementCount>0?'MOUNTED':'EMPTY')" +
+      "var s=document.documentElement.getAttribute('data-screen');" +
+      "return (a&&a.childElementCount>0&&s&&s!=='loading'?'MOUNTED':'NOT-READY')" +
+      "+' screen='+s" +
       "+' readyState='+document.readyState" +
       "+' href='+location.href" +
       "+' size='+innerWidth+'x'+innerHeight" +
