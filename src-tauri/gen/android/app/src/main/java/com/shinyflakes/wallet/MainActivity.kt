@@ -31,7 +31,6 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     Diagnostics.stage("MainActivity onCreate")
-    cutWebViewOffTheNetwork()
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     Diagnostics.stage("wallet activity created")
@@ -65,6 +64,11 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     Diagnostics.stage("WebView created")
     this.webView = webView
+    try {
+      cutWebViewOffTheNetwork()
+    } catch (t: Throwable) {
+      Diagnostics.stage("network lock failed: $t")
+    }
     if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE)) {
       WebViewCompat.setWebViewRenderProcessClient(webView, object : WebViewRenderProcessClient() {
         override fun onRenderProcessUnresponsive(view: WebView, renderer: WebViewRenderProcess?) {

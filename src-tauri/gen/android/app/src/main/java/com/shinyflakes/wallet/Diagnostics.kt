@@ -3,6 +3,8 @@ package com.shinyflakes.wallet
 
 import android.app.Activity
 import android.app.ActivityManager
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
@@ -19,6 +21,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 import java.util.Date
 import java.util.concurrent.atomic.AtomicLong
@@ -255,12 +258,17 @@ object Diagnostics {
       typeface = Typeface.DEFAULT_BOLD
     })
     column.addView(TextView(activity).apply {
-      text = "Take a screenshot of this screen and send it. It says exactly what failed."
+      text = "Tap Copy report and send the text. It says exactly what failed."
       setTextColor(TEXT)
       textSize = 13f
       setPadding(0, pad / 2, 0, pad)
     })
-    for ((label, action) in actions) {
+    val copy = "Copy report" to {
+      val clip = ClipData.newPlainText("ShinyFlakes report", "$title\n\n$body")
+      activity.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(clip)
+      Toast.makeText(activity, "Report copied", Toast.LENGTH_SHORT).show()
+    }
+    for ((label, action) in listOf(copy) + actions) {
       column.addView(Button(activity).apply {
         text = label
         isAllCaps = false
