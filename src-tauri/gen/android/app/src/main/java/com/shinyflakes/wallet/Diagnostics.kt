@@ -5,11 +5,16 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.system.Os
@@ -37,7 +42,6 @@ object Diagnostics {
   private const val TEST_HANG = "test-hang"
   private const val HEALTHY = "healthy"
   const val REPORT_SHOWN = "showing previous-start report"
-  private const val FREEZE_KILL_MS = 10_000L
 
   private val BG = Color.parseColor("#14161b")
   private val TEXT = Color.parseColor("#e8eaef")
@@ -65,6 +69,84 @@ object Diagnostics {
     rotate(File(d, HANG), File(d, PREV_HANG))
     stage("process started")
     watchMainThread()
+  }
+
+  fun probe(activity: Activity, done: (String) -> Unit) {
+    val main = Handler(Looper.getMainLooper())
+    val lines = mutableListOf<String>()
+    val procs = mutableListOf<String>()
+    val uid = android.os.Process.myUid()
+    File("/proc").listFiles()?.forEach { dir ->
+      val pid = dir.name.toIntOrNull() ?: return@forEach
+      try {
+        val owner = File(dir, "status").readLines().firstOrNull { it.startsWith("Uid:") }
+          ?.split(Regex("\\s+"))?.getOrNull(1)?.toIntOrNull()
+        if (owner == uid) procs += "$pid " + File(dir, "cmdline").readText().replace('\u0000', ' ').trim().take(70)
+      } catch (_: Throwable) {
+      }
+    }
+    lines += "Own processes (${procs.size}): " + procs.joinToString("; ")
+    val wv = try {
+      WebView.getCurrentWebViewPackage()?.packageName
+    } catch (_: Throwable) {
+      null
+    }
+    val targets = mutableListOf<Triple<String, Intent, Int>>()
+    if (wv != null) {
+      val cn = ComponentName(wv, "org.chromium.content.app.SandboxedProcessService0")
+      try {
+        val si = activity.packageManager.getServiceInfo(cn, 0)
+        lines += "WebView service visible: isolated=${si.flags and ServiceInfo.FLAG_ISOLATED_PROCESS != 0} " +
+          "external=${si.flags and ServiceInfo.FLAG_EXTERNAL_SERVICE != 0} exported=${si.exported}"
+      } catch (t: Throwable) {
+        lines += "WebView service visible: no ($t)"
+      }
+      targets += Triple("WebView page process", Intent().setComponent(cn), Context.BIND_AUTO_CREATE or Context.BIND_EXTERNAL_SERVICE)
+    }
+    targets += Triple("Own isolated process", Intent(activity, IsolatedProbe::class.java), Context.BIND_AUTO_CREATE)
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return done(lines.joinToString("\n"))
+
+    var left = targets.size
+    fun finish(line: String) {
+      lines += line
+      left -= 1
+      if (left == 0) done(lines.joinToString("\n"))
+    }
+    for ((label, intent, flags) in targets) {
+      var settled = false
+      val conn = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+          if (settled) return
+          settled = true
+          activity.applicationContext.unbindService(this)
+          finish("$label: started")
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {}
+        override fun onNullBinding(name: ComponentName?) {
+          if (settled) return
+          settled = true
+          activity.applicationContext.unbindService(this)
+          finish("$label: started (no binder)")
+        }
+      }
+      try {
+        val ok = activity.applicationContext.bindIsolatedService(intent, flags, "sfprobe", { main.post(it) }, conn)
+        if (!ok) {
+          settled = true
+          finish("$label: Android refused the bind")
+          continue
+        }
+        main.postDelayed({
+          if (settled) return@postDelayed
+          settled = true
+          try { activity.applicationContext.unbindService(conn) } catch (_: Throwable) {}
+          finish("$label: bind accepted, no reply within 5 s")
+        }, 5_000)
+      } catch (t: Throwable) {
+        settled = true
+        finish("$label: $t")
+      }
+    }
   }
 
   fun stage(what: String) {
@@ -112,16 +194,6 @@ object Diagnostics {
         }
         val stuck = SystemClock.uptimeMillis() - beat.get()
         if (stuck > 4_000) writeHang(stuck, mainThread.stackTrace)
-        // frozen start: close, so the next open reports it
-        if (stuck > FREEZE_KILL_MS) {
-          stage("closed itself after ${stuck / 1000} s frozen")
-          // drop the task, so reopening starts at the launcher
-          try {
-            app?.getSystemService(ActivityManager::class.java)?.appTasks?.forEach { it.finishAndRemoveTask() }
-          } catch (_: Throwable) {
-          }
-          android.os.Process.killProcess(android.os.Process.myPid())
-        }
       }
     }, "sf-freeze-watch").apply { isDaemon = true }.start()
   }

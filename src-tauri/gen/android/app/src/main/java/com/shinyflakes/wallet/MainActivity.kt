@@ -28,6 +28,7 @@ class MainActivity : TauriActivity() {
   private var rendererHung = false
   private var networkLocked = false
   private var report: View? = null
+  private var probing = false
 
   override fun onCreate(savedInstanceState: Bundle?) {
     Diagnostics.stage("MainActivity onCreate")
@@ -173,10 +174,20 @@ class MainActivity : TauriActivity() {
 
   // report
   private fun showReport(title: String, detail: String) {
+    if (report != null || isFinishing || probing) return
+    probing = true
+    Diagnostics.probe(this) { probe ->
+      probing = false
+      showReport(title, detail, probe)
+    }
+  }
+
+  private fun showReport(title: String, detail: String, probe: String) {
     if (report != null || isFinishing) return
     Diagnostics.stage("showing report: $title")
     val body = buildString {
       append(detail).append("\n\n")
+      append(probe).append("\n\n")
       append(Diagnostics.environment(this@MainActivity))
       append("Net lock: ").append(if (networkLocked) "on" else "off").append('\n')
       append("Renderer unresponsive: ").append(rendererHung).append('\n')

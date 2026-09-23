@@ -3,6 +3,13 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <queries>
+        <package android:name="com.google.android.webview" />
+        <package android:name="com.android.webview" />
+        <package android:name="com.google.android.trichromelibrary" />
+        <package android:name="com.android.chrome" />
+    </queries>
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
@@ -43,6 +50,11 @@
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
+            android:exported="false" />
+
+        <service
+            android:name=".IsolatedProbe"
+            android:isolatedProcess="true"
             android:exported="false" />
 
         <provider

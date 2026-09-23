@@ -55,6 +55,7 @@ src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/*
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/StartupActivity.kt
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/Diagnostics.kt
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/ShinyFlakesApp.kt
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/IsolatedProbe.kt
 !src-tauri/gen/android/app/src/main/res/
 src-tauri/gen/android/app/src/main/res/*
 !src-tauri/gen/android/app/src/main/res/xml/
