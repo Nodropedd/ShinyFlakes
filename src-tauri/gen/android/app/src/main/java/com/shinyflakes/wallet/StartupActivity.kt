@@ -20,18 +20,38 @@ class StartupActivity : Activity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+    Diagnostics.stage("StartupActivity created")
     val bg = Color.parseColor("#14161b")
     window.statusBarColor = bg
     window.navigationBarColor = bg
+
+    val force = intent?.getBooleanExtra(Diagnostics.FORCE_EXTRA, false) == true
+
+    // last start failed?
+    val previous = if (force) null else Diagnostics.previousRunReport(this)
+    if (previous != null) {
+      Diagnostics.stage(Diagnostics.REPORT_SHOWN)
+      setContentView(
+        Diagnostics.reportView(
+          this,
+          "ShinyFlakes didn't start last time",
+          previous,
+          listOf("Continue" to { start(force) }),
+        )
+      )
+      return
+    }
+    start(force)
+  }
+
+  private fun start(force: Boolean) {
     setContentView(TextView(this).apply {
       text = "Starting ShinyFlakes…"
       setTextColor(Color.parseColor("#939aa8"))
       textSize = 14f
       gravity = Gravity.CENTER
-      setBackgroundColor(bg)
+      setBackgroundColor(Color.parseColor("#14161b"))
     })
-
-    val force = intent?.getBooleanExtra(Diagnostics.FORCE_EXTRA, false) == true
 
     // hang guard
     main.postDelayed({
@@ -46,6 +66,7 @@ class StartupActivity : Activity() {
         if (settled || isFinishing) return@post
         settled = true
         if (failure == null) {
+          Diagnostics.stage("handing over to the wallet")
           startActivity(Intent(this, MainActivity::class.java).putExtra(Diagnostics.FORCE_EXTRA, force))
           @Suppress("DEPRECATION")
           overridePendingTransition(0, 0)
@@ -61,12 +82,14 @@ class StartupActivity : Activity() {
   private fun preflight(): Throwable? {
     try {
       stage = "loading the wallet core (libshinyflakes_lib.so)"
+      Diagnostics.stage(stage)
       System.loadLibrary("shinyflakes_lib")
     } catch (t: Throwable) {
       return t
     }
     try {
       stage = "checking the system WebView"
+      Diagnostics.stage(stage)
       if (WebView.getCurrentWebViewPackage() == null) {
         return IllegalStateException(
           "No Android System WebView is installed or enabled on this device. " +
@@ -79,10 +102,12 @@ class StartupActivity : Activity() {
       return t
     }
     stage = "done"
+    Diagnostics.stage("preflight passed")
     return null
   }
 
   private fun showFailure(t: Throwable) {
+    Diagnostics.stage("start-up failed: ${t.javaClass.simpleName}")
     val body = buildString {
       append(Diagnostics.environment(this@StartupActivity)).append('\n')
       append(Log.getStackTraceString(t).ifBlank { t.toString() }).append("\n\n")

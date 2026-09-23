@@ -30,9 +30,11 @@ class MainActivity : TauriActivity() {
   private var report: View? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    Diagnostics.stage("MainActivity onCreate")
     cutWebViewOffTheNetwork()
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    Diagnostics.stage("wallet activity created")
 
     // no autofill
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -40,16 +42,23 @@ class MainActivity : TauriActivity() {
         View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
     }
 
+    if (Diagnostics.takeTestHang()) {
+      Diagnostics.stage("test freeze")
+      SystemClock.sleep(8_000)
+    }
+
     val force = intent?.getBooleanExtra(Diagnostics.FORCE_EXTRA, false) == true
-    main.postDelayed({ checkStarted(force) }, if (force) 4_000L else WATCHDOG_MS)
+    main.postDelayed({ checkStarted(final = false, force = force) }, FIRST_CHECK_MS)
   }
 
   override fun onWebViewCreate(webView: WebView) {
+    Diagnostics.stage("WebView created")
     this.webView = webView
     if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_VIEW_RENDERER_CLIENT_BASIC_USAGE)) {
       WebViewCompat.setWebViewRenderProcessClient(webView, object : WebViewRenderProcessClient() {
         override fun onRenderProcessUnresponsive(view: WebView, renderer: WebViewRenderProcess?) {
           rendererHung = true
+          Diagnostics.stage("WebView renderer unresponsive")
         }
         override fun onRenderProcessResponsive(view: WebView, renderer: WebViewRenderProcess?) {
           rendererHung = false
@@ -68,14 +77,15 @@ class MainActivity : TauriActivity() {
   }
 
   // start-up watchdog
-  private fun checkStarted(force: Boolean) {
+  private fun checkStarted(final: Boolean, force: Boolean) {
     if (isFinishing || report != null) return
+    val retry = { main.postDelayed({ checkStarted(final = true, force = force) }, FINAL_CHECK_MS - FIRST_CHECK_MS) }
+
     val wv = webView
     if (wv == null) {
-      showReport(
-        "The wallet core never created its window",
-        "Rust did not hand the app a WebView within ${elapsed()} ms."
-      )
+      Diagnostics.stage("no WebView yet at ${elapsed()} ms")
+      if (final) showReport("The wallet core never created its window", "Rust did not hand the app a WebView within ${elapsed()} ms.")
+      else retry()
       return
     }
 
@@ -85,27 +95,29 @@ class MainActivity : TauriActivity() {
       val page = decode(raw)
       val native = "WebView url=${wv.url} progress=${wv.progress}%"
       if (!page.startsWith("MOUNTED")) {
-        showReport("The page loaded but the app did not start", "$native\n$page")
+        Diagnostics.stage("page not mounted at ${elapsed()} ms")
+        if (final) showReport("The page loaded but the app did not start", "$native\n$page") else retry()
         return@evaluateJavascript
       }
       screenLooksBlank { blank ->
-        when {
-          blank == true -> showReport(
-            "The app is running but nothing is being drawn",
-            "$native\n$page\nScreen capture is one flat colour."
-          )
-          force -> showReport("Diagnostics requested", "$native\n$page\nScreen blank: $blank")
+        if (blank == true) {
+          Diagnostics.stage("screen blank at ${elapsed()} ms")
+          if (final) showReport("The app is running but nothing is being drawn", "$native\n$page\nScreen capture is one flat colour.")
+          else retry()
+        } else {
+          Diagnostics.markHealthy()
+          if (force) showReport("Diagnostics requested", "$native\n$page\nScreen blank: $blank")
         }
       }
     }
     main.postDelayed({
-      if (!answered) {
-        showReport(
-          "The WebView stopped responding",
-          "No answer from the page's JavaScript within ${PROBE_MS / 1000} s. " +
-            "Renderer unresponsive: $rendererHung. WebView url=${wv.url} progress=${wv.progress}%"
-        )
-      }
+      if (answered) return@postDelayed
+      Diagnostics.stage("page not answering at ${elapsed()} ms")
+      if (final) showReport(
+        "The WebView stopped responding",
+        "No answer from the page's JavaScript within ${PROBE_MS / 1000} s. " +
+          "Renderer unresponsive: $rendererHung. WebView url=${wv.url} progress=${wv.progress}%"
+      ) else retry()
     }, PROBE_MS)
   }
 
@@ -147,6 +159,7 @@ class MainActivity : TauriActivity() {
   // report
   private fun showReport(title: String, detail: String) {
     if (report != null || isFinishing) return
+    Diagnostics.stage("showing report: $title")
     val body = buildString {
       append(detail).append("\n\n")
       append(Diagnostics.environment(this@MainActivity))
@@ -176,8 +189,9 @@ class MainActivity : TauriActivity() {
     ProxyController.getInstance().clearProxyOverride({ it.run() }) {
       main.post {
         networkLocked = false
+        Diagnostics.stage("network lock lifted, reloading")
         webView?.reload()
-        main.postDelayed({ checkStarted(false) }, WATCHDOG_MS)
+        main.postDelayed({ checkStarted(final = true, force = false) }, FINAL_CHECK_MS)
       }
     }
   }
@@ -191,7 +205,8 @@ class MainActivity : TauriActivity() {
   private fun elapsed() = SystemClock.uptimeMillis() - startedAt
 
   private companion object {
-    const val WATCHDOG_MS = 10_000L
+    const val FIRST_CHECK_MS = 3_000L
+    const val FINAL_CHECK_MS = 10_000L
     const val PROBE_MS = 3_000L
     const val PROBE = "(function(){try{" +
       "var a=document.getElementById('app');" +

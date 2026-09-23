@@ -54,6 +54,12 @@ src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/*
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/MainActivity.kt
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/StartupActivity.kt
 !src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/Diagnostics.kt
+!src-tauri/gen/android/app/src/main/java/com/shinyflakes/wallet/ShinyFlakesApp.kt
+!src-tauri/gen/android/app/src/main/res/
+src-tauri/gen/android/app/src/main/res/*
+!src-tauri/gen/android/app/src/main/res/xml/
+src-tauri/gen/android/app/src/main/res/xml/*
+!src-tauri/gen/android/app/src/main/res/xml/data_extraction_rules.xml
 # Built APKs, and the v4 signature files apksigner writes beside them.
 *.apk
 *.idsig

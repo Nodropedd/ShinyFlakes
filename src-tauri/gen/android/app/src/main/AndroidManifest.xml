@@ -1,31 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
+    <!-- no backups: vault and key -->
     <application
+        android:name=".ShinyFlakesApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.shinyflakes"
-        android:usesCleartextTraffic="${usesCleartextTraffic}">
-        <!-- The system WebView talks to Google on its own account: Safe
-             Browsing looks URLs up, and metrics report usage. This app only
-             ever loads its own bundled pages, so neither protects anything
-             here, and both connect directly - around Tor, when Tor is on,
-             and before the user has agreed to any network use at all. -->
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
+        tools:targetApi="31">
+        <!-- WebView stays quiet -->
         <meta-data
             android:name="android.webkit.WebView.EnableSafeBrowsing"
             android:value="false" />
         <meta-data
             android:name="android.webkit.WebView.MetricsOptOut"
             android:value="true" />
-        <!-- The launcher is a plain activity that checks the Rust library
-             loads and a WebView exists before starting the wallet. A failure
-             inside the Tauri activity cannot be caught there — it re-fires
-             from the lifecycle callbacks WryActivity overrides — and leaves
-             a black screen with nothing to report. -->
+
+        <!-- launcher preflight -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:label="@string/main_activity_title"
@@ -54,6 +53,17 @@
           <meta-data
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- no Play Services at start-up -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+                tools:node="remove" />
         </provider>
     </application>
 </manifest>
