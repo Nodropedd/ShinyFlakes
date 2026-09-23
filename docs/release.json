@@ -1,42 +1,42 @@
 {
-  "version": "0.1.1",
-  "tag": "v0.1.1",
-  "date": "2026-09-22",
+  "version": "0.1.2",
+  "tag": "v0.1.2",
+  "date": "2026-09-23",
   "assets": [
     {
       "name": "ShinyFlakes-android.apk",
-      "size": 41978078,
-      "sha256": "c8c06972fece3b239ab895c5b24bdc23afead7d3a32e0b48213eba457c87c4ae"
+      "size": 41982174,
+      "sha256": "e4c3a4f678e7b2aeac23e9253262a36c36482474aa7a482ec294919952501741"
     },
     {
       "name": "ShinyFlakes-windows-x64-setup.exe",
-      "size": 2584706,
-      "sha256": "cfa77ff300324ca4ac5dc80e649c7facd5e187ce44c17dbcfcb0b369850f8a34"
+      "size": 2583548,
+      "sha256": "fa32b5b3ab29e667cc0890700a467a41728d4af26b262acdf18180bfb14051de"
     },
     {
       "name": "ShinyFlakes-windows-x64-portable.exe",
-      "size": 6323200,
-      "sha256": "e3f6b1d8e3615b9603e3371aae621cc982f0a10eef224ff26b14e546758ee9f8"
+      "size": 6322176,
+      "sha256": "1620ac986fd9be863b90c0cd8869cdb71d3f9a4e1b4623dc5c3169b59a99cbfe"
     },
     {
       "name": "ShinyFlakes-linux-x86_64.AppImage",
-      "size": 82098680,
-      "sha256": "20f06fb0e4d07d2efa5b561879b87f8953d888e28c351cae81f4cb281f0890d1"
+      "size": 82094584,
+      "sha256": "dafab3eb7297de321a7a9a8add9213f04f5e6584bb2661a007d6b058b441146a"
     },
     {
       "name": "ShinyFlakes-linux-amd64.deb",
-      "size": 3989536,
-      "sha256": "bcb2f236b686b40ee16987d10090f7283bd3a512175e3ee404254ac7dfa5c6e2"
+      "size": 3988154,
+      "sha256": "9b0ef86257b31676c8bb9367cccd2b52a31273809034a47ab057c940b45bb83c"
     },
     {
       "name": "ShinyFlakes-linux-x86_64.rpm",
-      "size": 3990179,
-      "sha256": "8018596658c7b56c6b42efb17f7e1449551bcb5abdf4f5bec46c59179ac8f3ef"
+      "size": 3989160,
+      "sha256": "790ac005c12597050872c76ee7b257ab71ed8086528148d4f8b1b32cd170a5f1"
     },
     {
       "name": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
-      "size": 3068198,
-      "sha256": "eb37930d820985700a102aa0610863e9a10cdb142b5377f1715439b93dbec434"
+      "size": 3069832,
+      "sha256": "a5caceedfc884c20bb8e88f77fd109cb59333abdb21c3d67eb4f07e211ea6588"
     }
   ]
 }
