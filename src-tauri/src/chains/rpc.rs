@@ -205,14 +205,17 @@ pub const SCAN_BATCH: u32 = 10;
 
 pub const SCAN_GAP: u32 = 10;
 
+pub const EXTRA_GAP: u32 = 5;
+
 pub const SCAN_CEILING: u32 = 400;
 
 pub async fn esplora_utxos_batch(
     bases: &[&str],
     addresses: &[(u32, String)],
+    confirmed_only: bool,
 ) -> Result<Vec<(u32, Vec<super::btc_tx::Utxo>)>> {
     let found = futures::future::join_all(addresses.iter().map(|(index, address)| async move {
-        (*index, esplora_utxos(bases, address, *index).await)
+        (*index, esplora_utxos(bases, address, *index, confirmed_only).await)
     }))
     .await;
 
@@ -242,13 +245,14 @@ pub async fn esplora_utxos(
     bases: &[&str],
     address: &str,
     key_index: u32,
+    confirmed_only: bool,
 ) -> Result<Vec<super::btc_tx::Utxo>> {
     let mut last = WalletError::Network("no provider configured".into());
     for base in bases {
         match get_json::<Vec<EsploraUtxo>>(&format!("{base}{address}/utxo")).await {
             Ok(list) => {
                 let mut out = Vec::new();
-                for u in list.into_iter().filter(|u| u.status.confirmed) {
+                for u in list.into_iter().filter(|u| u.status.confirmed || !confirmed_only) {
                     let raw = (0..u.txid.len())
                         .step_by(2)
                         .map(|i| u8::from_str_radix(&u.txid[i..i + 2], 16))
@@ -267,6 +271,7 @@ pub async fn esplora_utxos(
                         vout: u.vout,
                         value: u.value,
                         key_index,
+                        legacy: false,
                     });
                 }
                 out.sort_by(|a, b| b.value.cmp(&a.value));
@@ -978,6 +983,15 @@ pub async fn sol_rent_exempt_minimum() -> Result<u64> {
     sol_rpc(&c, "getMinimumBalanceForRentExemption", serde_json::json!([0])).await
 }
 
+pub async fn sol_has_activity(address: &str) -> Result<bool> {
+    let found: Vec<serde_json::Value> = sol_call(
+        "getSignaturesForAddress",
+        serde_json::json!([address, { "limit": 1 }]),
+    )
+    .await?;
+    Ok(!found.is_empty())
+}
+
 pub async fn sol_balance_of(address: &str) -> Result<i128> {
     let c = client()?;
     sol_balance(&c, address).await
@@ -1165,7 +1179,7 @@ mod live {
         println!("transaction is {} bytes", tx.len());
 
         let message = sol_tx::build_message(
-            &sol_tx::signing_key(&s).verifying_key().to_bytes(),
+            &sol_tx::signing_key(&s).unwrap().verifying_key().to_bytes(),
             &sol_tx::parse_address("1nc1nerator11111111111111111111111111111111").unwrap(),
             1_000_000,
             &blockhash,

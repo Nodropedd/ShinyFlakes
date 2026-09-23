@@ -322,6 +322,45 @@ fn address_of(list: &[AssetAddress], asset: &str) -> Option<String> {
         .and_then(|a| a.address.clone())
 }
 
+pub async fn utxo_history(asset: &str, address: &str) -> Result<Vec<Entry>> {
+    match asset {
+        "BTC" => {
+            esplora_history(
+                "BTC",
+                &["https://mempool.space/api/address/", "https://blockstream.info/api/address/"],
+                address,
+            )
+            .await
+        }
+        _ => esplora_history("LTC", &["https://litecoinspace.org/api/address/"], address).await,
+    }
+}
+
+pub fn merge(entries: Vec<Entry>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    for e in entries {
+        let net = |x: &Entry| {
+            let v: i128 = x.amount_minor.parse().unwrap_or(0);
+            if x.direction == "in" { v } else { -v }
+        };
+        match out.iter_mut().find(|x| x.asset == e.asset && x.id == e.id) {
+            Some(x) => {
+                let sum = net(x) + net(&e);
+                *x = Entry::new(&e.asset, e.id.clone(), sum, x.timestamp.or(e.timestamp), x.confirmed && e.confirmed);
+            }
+            None => out.push(e),
+        }
+    }
+    out.retain(|x| x.amount_minor != "0");
+    out.sort_by(|x, y| match (y.timestamp, x.timestamp) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    out
+}
+
 pub async fn all(addresses: &[AssetAddress]) -> Vec<Entry> {
     let btc = address_of(addresses, "BTC");
     let ltc = address_of(addresses, "LTC");

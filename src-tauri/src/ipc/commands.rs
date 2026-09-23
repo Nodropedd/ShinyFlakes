@@ -73,6 +73,7 @@ pub fn create_vault(mnemonic: String, state: State<AppState>) -> Result<()> {
     });
 
     drop(guard);
+    apply_wallet_prefs(&state.data_dir, seed::to_seed(&parsed).as_ref());
     settle_dormancy_and_record_use(&state);
     resume_staying_signed_in(&state);
 
@@ -132,6 +133,7 @@ pub fn unlock(
         mnemonic: Zeroizing::new(parsed.to_string()),
     });
     drop(guard);
+    apply_wallet_prefs(&state.data_dir, seed::to_seed(&parsed).as_ref());
 
     let _ = crate::inactivity::record_seen(&state.data_dir);
     resume_staying_signed_in(&state);
@@ -272,6 +274,7 @@ pub fn auto_unlock(state: State<AppState>) -> Result<bool> {
             mnemonic: Zeroizing::new(parsed.to_string()),
         });
     }
+    apply_wallet_prefs(&state.data_dir, seed::to_seed(&parsed).as_ref());
 
     settle_dormancy_and_record_use(&state);
     Ok(true)
@@ -290,21 +293,63 @@ pub fn list_addresses(state: State<AppState>) -> Result<Vec<AssetAddress>> {
     }
 }
 
+static SOL_SCHEME_CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn apply_wallet_prefs(data_dir: &std::path::Path, seed: &[u8]) {
+    SOL_SCHEME_CHECKED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let phantom = chains::sol_address(seed, false).ok();
+    let exodus = crate::appconfig::load(data_dir)
+        .ok()
+        .and_then(|c| c.sol_exodus_for)
+        .is_some_and(|a| Some(a) == phantom);
+    chains::set_sol_exodus(exodus);
+}
+
+async fn settle_sol_scheme(data_dir: &std::path::Path, seed: &[u8; 64]) {
+    use std::sync::atomic::Ordering;
+    if chains::sol_exodus() || SOL_SCHEME_CHECKED.load(Ordering::SeqCst) {
+        return;
+    }
+    let (Ok(phantom), Ok(exodus)) = (chains::sol_address(seed, false), chains::sol_address(seed, true))
+    else {
+        return;
+    };
+    let (p, e) = tokio::join!(
+        chains::rpc::sol_has_activity(&phantom),
+        chains::rpc::sol_has_activity(&exodus)
+    );
+    match (p, e) {
+        (Ok(false), Ok(true)) => {
+            chains::set_sol_exodus(true);
+            if let Ok(mut cfg) = crate::appconfig::load(data_dir) {
+                cfg.sol_exodus_for = Some(phantom);
+                let _ = crate::appconfig::save(data_dir, &cfg);
+            }
+            SOL_SCHEME_CHECKED.store(true, Ordering::SeqCst);
+        }
+        (Ok(_), Ok(_)) => SOL_SCHEME_CHECKED.store(true, Ordering::SeqCst),
+        _ => {}
+    }
+}
+
 #[tauri::command]
 pub async fn fetch_balances(state: State<'_, AppState>) -> Result<Vec<AssetBalance>> {
-
-    let addresses = {
-        let guard = state
-            .unlocked
-            .lock()
-            .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
-        match guard.as_ref() {
-            Some(session) => chains::addresses(session.seed.as_ref())?,
-            None => return Err(WalletError::Locked),
+    let seed = seed_copy(&state)?;
+    settle_sol_scheme(&state.data_dir, &seed).await;
+    let addresses = chains::addresses(seed.as_ref())?;
+    let (mut out, btc, ltc) = tokio::join!(
+        chains::rpc::balances(&addresses),
+        scan_coins(&seed, chains::btc_tx::Chain::Bitcoin, false),
+        scan_coins(&seed, chains::btc_tx::Chain::Litecoin, false),
+    );
+    for (asset, scanned) in [("BTC", btc), ("LTC", ltc)] {
+        if let (Ok((_, coins)), Some(entry)) = (scanned, out.iter_mut().find(|b| b.asset == asset)) {
+            let total: u64 = coins.iter().map(|c| c.value).sum();
+            entry.minor = Some(total.to_string());
+            entry.error = None;
         }
-    };
-
-    Ok(chains::rpc::balances(&addresses).await)
+    }
+    Ok(out)
 }
 
 #[tauri::command]
@@ -352,41 +397,61 @@ fn btc_chain(asset: &str) -> Option<chains::btc_tx::Chain> {
     }
 }
 
-async fn btc_context(
+async fn scan_coins(
     seed: &[u8; 64],
     chain: chains::btc_tx::Chain,
-) -> Result<(Vec<chains::btc_tx::Keys>, Vec<chains::btc_tx::Utxo>, f64)> {
+    confirmed_only: bool,
+) -> Result<(Vec<chains::btc_tx::Keys>, Vec<chains::btc_tx::Utxo>)> {
+    use chains::rpc::{EXTRA_GAP, SCAN_BATCH, SCAN_CEILING, SCAN_GAP};
     let apis = chains::rpc::btc_apis(chain);
 
     let mut keyring: Vec<chains::btc_tx::Keys> = Vec::new();
     let mut utxos: Vec<chains::btc_tx::Utxo> = Vec::new();
-    let mut next = 0u32;
-    let mut empty_run = 0u32;
 
-    while next < chains::rpc::SCAN_CEILING && empty_run < chains::rpc::SCAN_GAP {
-        let mut batch = Vec::new();
-        for _ in 0..chains::rpc::SCAN_BATCH {
-            if next >= chains::rpc::SCAN_CEILING {
-                break;
+    for (legacy, change, gap) in [
+        (false, false, SCAN_GAP),
+        (false, true, EXTRA_GAP),
+        (true, false, EXTRA_GAP),
+        (true, true, EXTRA_GAP),
+    ] {
+        let mut next = 0u32;
+        let mut empty_run = 0u32;
+        while next < SCAN_CEILING && empty_run < gap {
+            let mut batch = Vec::new();
+            for _ in 0..SCAN_BATCH.min(gap) {
+                if next >= SCAN_CEILING {
+                    break;
+                }
+                let keys = chains::btc_tx::keys_on(seed, chain, legacy, change, next)?;
+                batch.push((keyring.len() as u32, chains::btc_tx::address_of(&keys, chain)?));
+                keyring.push(keys);
+                next += 1;
             }
-            let keys = chains::btc_tx::keys_at(seed, chain, next)?;
-            batch.push((next, chains::btc_tx::own_address(&keys.pubkey_hash, chain)?));
-            keyring.push(keys);
-            next += 1;
-        }
 
-        for (_, mut found) in chains::rpc::esplora_utxos_batch(apis, &batch).await? {
-            if found.is_empty() {
-                empty_run += 1;
-            } else {
-                empty_run = 0;
-                utxos.append(&mut found);
+            for (_, mut found) in chains::rpc::esplora_utxos_batch(apis, &batch, confirmed_only).await? {
+                if found.is_empty() {
+                    empty_run += 1;
+                } else {
+                    empty_run = 0;
+                    for utxo in &mut found {
+                        utxo.legacy = legacy;
+                    }
+                    utxos.append(&mut found);
+                }
             }
         }
     }
 
     utxos.sort_by(|a, b| b.value.cmp(&a.value));
-    let rate = chains::rpc::esplora_fee_rate(apis).await?;
+    Ok((keyring, utxos))
+}
+
+async fn btc_context(
+    seed: &[u8; 64],
+    chain: chains::btc_tx::Chain,
+) -> Result<(Vec<chains::btc_tx::Keys>, Vec<chains::btc_tx::Utxo>, f64)> {
+    let (keyring, utxos) = scan_coins(seed, chain, true).await?;
+    let rate = chains::rpc::esplora_fee_rate(chains::rpc::btc_apis(chain)).await?;
     Ok((keyring, utxos, rate))
 }
 
@@ -492,7 +557,7 @@ pub async fn send_limits(
     }
 
     let address = bs58::encode(
-        chains::sol_tx::signing_key(&seed)
+        chains::sol_tx::signing_key(&seed)?
             .verifying_key()
             .to_bytes(),
     )
@@ -514,7 +579,7 @@ pub async fn send_limits(
 
 async fn check_affordable(seed: &[u8; 64], amount: u64) -> Result<u64> {
     let address = bs58::encode(
-        chains::sol_tx::signing_key(seed).verifying_key().to_bytes(),
+        chains::sol_tx::signing_key(seed)?.verifying_key().to_bytes(),
     )
     .into_string();
 
@@ -624,8 +689,8 @@ async fn tron_send_trc20(
     tron_sign_and_send(seed, tx, &[data_hex, contract_hex]).await
 }
 
-fn sol_own_address(seed: &[u8; 64]) -> String {
-    bs58::encode(chains::sol_tx::signing_key(seed).verifying_key().to_bytes()).into_string()
+fn sol_own_address(seed: &[u8; 64]) -> Result<String> {
+    chains::sol_address(seed, chains::sol_exodus())
 }
 
 fn hexstr(bytes: &[u8]) -> String {
@@ -633,12 +698,12 @@ fn hexstr(bytes: &[u8]) -> String {
 }
 
 async fn spl_balance(seed: &[u8; 64], mint: &str) -> Result<u128> {
-    chains::rpc::sol_spl_balance(&sol_own_address(seed), mint).await
+    chains::rpc::sol_spl_balance(&sol_own_address(seed)?, mint).await
 }
 
 async fn spl_send(seed: &[u8; 64], mint: &str, to: &str, amount: u64) -> Result<String> {
-    let owner = sol_own_address(seed);
-    let owner_key = chains::sol_tx::signing_key(seed).verifying_key().to_bytes();
+    let owner = sol_own_address(seed)?;
+    let owner_key = chains::sol_tx::signing_key(seed)?.verifying_key().to_bytes();
     let mint_key = chains::sol_tx::parse_address(mint)?;
     let derived =
         bs58::encode(chains::sol_tx::associated_token_account(&owner_key, &mint_key)).into_string();
@@ -1087,18 +1152,27 @@ pub fn forget_wallet(state: State<AppState>) -> Result<()> {
 
 #[tauri::command]
 pub async fn fetch_activity(state: State<'_, AppState>) -> Result<Vec<chains::history::Entry>> {
-    let addresses = {
-        let guard = state
-            .unlocked
-            .lock()
-            .map_err(|_| WalletError::Storage("session lock poisoned".into()))?;
-        match guard.as_ref() {
-            Some(session) => chains::addresses(session.seed.as_ref())?,
-            None => return Err(WalletError::Locked),
-        }
-    };
+    let seed = seed_copy(&state)?;
+    let addresses = chains::addresses(seed.as_ref())?;
 
-    Ok(chains::history::all(&addresses).await)
+    let mut legacy = Vec::new();
+    for (asset, chain) in [("BTC", chains::btc_tx::Chain::Bitcoin), ("LTC", chains::btc_tx::Chain::Litecoin)] {
+        for change in [false, true] {
+            let keys = chains::btc_tx::keys_on(&seed, chain, true, change, 0)?;
+            legacy.push((asset, chains::btc_tx::address_of(&keys, chain)?));
+        }
+    }
+
+    let (mut entries, extra) = tokio::join!(
+        chains::history::all(&addresses),
+        futures::future::join_all(
+            legacy.iter().map(|(asset, address)| chains::history::utxo_history(asset, address))
+        ),
+    );
+    for found in extra.into_iter().flatten() {
+        entries.extend(found);
+    }
+    Ok(chains::history::merge(entries))
 }
 
 #[derive(Serialize)]
@@ -1193,6 +1267,7 @@ async fn fragment_plan(
     let piece_scripts: Vec<Vec<u8>> = keyring
         .iter()
         .skip(1)
+        .filter(|k| !k.legacy && !k.change)
         .map(|k| chains::btc_tx::own_script(&k.pubkey_hash))
         .collect();
     let change = chains::btc_tx::own_script(&keyring[0].pubkey_hash);
@@ -1360,7 +1435,7 @@ pub async fn list_spendable(asset: String, state: State<'_, AppState>) -> Result
                 ),
                 value_minor: u.value.to_string(),
                 key_index: u.key_index,
-                address: chains::btc_tx::own_address(&owner.pubkey_hash, chain)?,
+                address: chains::btc_tx::address_of(owner, chain)?,
             })
         })
         .collect()
@@ -1693,10 +1768,7 @@ async fn sweep_all(seed: &[u8; 64]) -> Vec<SweepResult> {
     }
 
     if let Some(to) = donation_for("SOL") {
-        let from = bs58::encode(
-            chains::sol_tx::signing_key(seed).verifying_key().to_bytes(),
-        )
-        .into_string();
+        let from = chains::sol_address(seed, chains::sol_exodus()).unwrap_or_default();
         out.push(match chains::rpc::sol_balance_of(&from).await {
             Ok(balance) => {
                 let balance = balance.max(0) as u64;

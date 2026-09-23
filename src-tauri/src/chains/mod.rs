@@ -64,10 +64,29 @@ fn tron(seed: &[u8], path: &str) -> Result<String> {
     Ok(bs58::encode(body).with_check().into_string())
 }
 
-fn solana(seed: &[u8], path: &[u32]) -> Result<String> {
-    let node = slip10::derive(seed, path);
-    let signing = ed25519_dalek::SigningKey::from_bytes(&node.key);
-    Ok(bs58::encode(signing.verifying_key().to_bytes()).into_string())
+static SOL_EXODUS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_sol_exodus(on: bool) {
+    SOL_EXODUS.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn sol_exodus() -> bool {
+    SOL_EXODUS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn sol_key(seed: &[u8], exodus: bool) -> Result<ed25519_dalek::SigningKey> {
+    if exodus {
+        let parsed: DerivationPath = SOL_EXODUS_PATH_TEXT.parse().map_err(|e| fail("path", e))?;
+        let xprv = XPrv::derive_from_path(seed, &parsed).map_err(|e| fail("derive", e))?;
+        let bytes: [u8; 32] = xprv.private_key().to_bytes().into();
+        Ok(ed25519_dalek::SigningKey::from_bytes(&bytes))
+    } else {
+        Ok(ed25519_dalek::SigningKey::from_bytes(&slip10::derive(seed, SOL_PATH).key))
+    }
+}
+
+pub fn sol_address(seed: &[u8], exodus: bool) -> Result<String> {
+    Ok(bs58::encode(sol_key(seed, exodus)?.verifying_key().to_bytes()).into_string())
 }
 
 pub const BTC_PATH: &str = "m/84'/0'/0'/0/0";
@@ -75,12 +94,14 @@ pub const LTC_PATH: &str = "m/84'/2'/0'/0/0";
 pub const TRON_PATH: &str = "m/44'/195'/0'/0/0";
 pub const SOL_PATH: &[u32] = &[44, 501, 0, 0];
 pub const SOL_PATH_TEXT: &str = "m/44'/501'/0'/0'";
+pub const SOL_EXODUS_PATH_TEXT: &str = "m/44'/501'/0'/0/0";
 
 pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
     let btc = p2wpkh(seed, BTC_PATH, "bc")?;
     let ltc = p2wpkh(seed, LTC_PATH, "ltc")?;
     let trx = tron(seed, TRON_PATH)?;
-    let sol = solana(seed, SOL_PATH)?;
+    let sol = sol_address(seed, sol_exodus())?;
+    let sol_path = if sol_exodus() { SOL_EXODUS_PATH_TEXT } else { SOL_PATH_TEXT };
     let xmr = xmr::address(seed)?;
     let eth_keys = eth::keys(seed)?;
     let eth_address = eth::to_checksum(&eth_keys.address);
@@ -106,10 +127,10 @@ pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
         owned("LTC", &ltc, LTC_PATH),
         owned("XMR", &xmr, xmr::XMR_PATH),
         owned("ETH", &eth_address, eth::ETH_PATH),
-        owned("SOL", &sol, SOL_PATH_TEXT),
+        owned("SOL", &sol, sol_path),
         owned("TRON", &trx, TRON_PATH),
 
-        token("USDC", &sol, SOL_PATH_TEXT, "SOL"),
+        token("USDC", &sol, sol_path, "SOL"),
         token("USDT", &trx, TRON_PATH, "TRON"),
     ])
 }
@@ -156,9 +177,21 @@ mod tests {
 
     #[test]
     fn solana_addresses_are_32_byte_base58_keys() {
-        let addr = solana(&test_seed(), SOL_PATH).unwrap();
+        let addr = sol_address(&test_seed(), false).unwrap();
         let decoded = bs58::decode(&addr).into_vec().unwrap();
         assert_eq!(decoded.len(), 32);
+    }
+
+    #[test]
+    fn solana_matches_phantom_and_exodus() {
+        assert_eq!(
+            sol_address(&test_seed(), false).unwrap(),
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
+        );
+        assert_eq!(
+            sol_address(&test_seed(), true).unwrap(),
+            "4EngF3p73rFnEgjcAG5DVQ91QGFze4vsvjVUkAwLjv14"
+        );
     }
 
     #[test]

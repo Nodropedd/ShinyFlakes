@@ -214,6 +214,7 @@ class Wallet {
       this.error = (b.reason as { message?: string }).message ?? String(b.reason);
     }
     if (p.status === "fulfilled") this.prices = p.value;
+    void this.loadAddresses();
 
     if (settings.moneroReady && !this.moneroStarting) {
       try {

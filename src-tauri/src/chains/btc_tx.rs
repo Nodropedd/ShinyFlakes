@@ -26,18 +26,18 @@ impl Chain {
         }
     }
 
+    fn coin_type(self) -> u32 {
+        match self {
+            Chain::Bitcoin => 0,
+            Chain::Litecoin => 2,
+        }
+    }
+
     fn legacy_versions(self) -> (u8, u8) {
         match self {
             Chain::Bitcoin => (0x00, 0x05),
 
             Chain::Litecoin => (0x30, 0x32),
-        }
-    }
-
-    pub fn path(self) -> &'static str {
-        match self {
-            Chain::Bitcoin => super::BTC_PATH,
-            Chain::Litecoin => super::LTC_PATH,
         }
     }
 }
@@ -50,6 +50,8 @@ pub struct Utxo {
     pub value: u64,
 
     pub key_index: u32,
+
+    pub legacy: bool,
 }
 
 fn bad(what: &str, e: impl std::fmt::Display) -> WalletError {
@@ -146,12 +148,17 @@ pub struct Keys {
     pub signing: SigningKey,
     pub pubkey: Vec<u8>,
     pub pubkey_hash: [u8; 20],
+    pub legacy: bool,
+    pub change: bool,
 }
 
 pub fn keys_at(seed: &[u8], chain: Chain, index: u32) -> Result<Keys> {
+    keys_on(seed, chain, false, false, index)
+}
 
-    let base = chain.path().rsplit_once('/').map(|(head, _)| head).unwrap_or(chain.path());
-    let full = format!("{base}/{index}");
+pub fn keys_on(seed: &[u8], chain: Chain, legacy: bool, change: bool, index: u32) -> Result<Keys> {
+    let purpose = if legacy { 44 } else { 84 };
+    let full = format!("m/{purpose}'/{}'/0'/{}/{index}", chain.coin_type(), change as u32);
 
     let path: DerivationPath = full.parse().map_err(|e| bad("path", e))?;
     let xprv = XPrv::derive_from_path(seed, &path).map_err(|e| bad("derive", e))?;
@@ -165,7 +172,19 @@ pub fn keys_at(seed: &[u8], chain: Chain, index: u32) -> Result<Keys> {
         signing,
         pubkey,
         pubkey_hash,
+        legacy,
+        change,
     })
+}
+
+pub fn address_of(keys: &Keys, chain: Chain) -> Result<String> {
+    if keys.legacy {
+        let mut body = vec![chain.legacy_versions().0];
+        body.extend_from_slice(&keys.pubkey_hash);
+        Ok(bs58::encode(body).with_check().into_string())
+    } else {
+        own_address(&keys.pubkey_hash, chain)
+    }
 }
 
 pub fn own_address(pubkey_hash: &[u8; 20], chain: Chain) -> Result<String> {
@@ -244,6 +263,42 @@ pub fn estimated_vsize(inputs: usize, outputs: usize) -> u64 {
     (base + inputs * 68 + outputs * 43) as u64
 }
 
+pub fn vsize_of(inputs: &[Utxo], outputs: usize) -> u64 {
+    let spent: usize = inputs.iter().map(|u| if u.legacy { 148 } else { 68 }).sum();
+    (12 + spent.max(68) + outputs * 43) as u64
+}
+
+fn legacy_digest(
+    version: u32,
+    inputs: &[([u8; 32], u32, u32)],
+    outputs: &[Output],
+    index: usize,
+    code: &[u8],
+    locktime: u32,
+) -> [u8; 32] {
+    let mut pre = Vec::new();
+    pre.extend_from_slice(&version.to_le_bytes());
+    varint(inputs.len() as u64, &mut pre);
+    for (i, (txid, vout, sequence)) in inputs.iter().enumerate() {
+        pre.extend_from_slice(txid);
+        pre.extend_from_slice(&vout.to_le_bytes());
+        if i == index {
+            push_bytes(code, &mut pre);
+        } else {
+            pre.push(0x00);
+        }
+        pre.extend_from_slice(&sequence.to_le_bytes());
+    }
+    varint(outputs.len() as u64, &mut pre);
+    for output in outputs {
+        pre.extend_from_slice(&output.value.to_le_bytes());
+        push_bytes(&output.script, &mut pre);
+    }
+    pre.extend_from_slice(&locktime.to_le_bytes());
+    pre.extend_from_slice(&SIGHASH_ALL.to_le_bytes());
+    sha256d(&pre)
+}
+
 pub fn build_signed(
     keyring: &[Keys],
     inputs: &[Utxo],
@@ -258,23 +313,26 @@ pub fn build_signed(
     }
 
     let version: u32 = 2;
+    let mut owners = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        owners.push(
+            keyring
+                .get(input.key_index as usize)
+                .ok_or_else(|| bad("signing", "no key for one of the outputs being spent"))?,
+        );
+    }
+    let outpoints: Vec<([u8; 32], u32, u32)> =
+        inputs.iter().map(|i| (i.txid, i.vout, SEQUENCE)).collect();
+
+    let mut script_sigs: Vec<Vec<u8>> = Vec::with_capacity(inputs.len());
     let mut witnesses: Vec<Vec<Vec<u8>>> = Vec::with_capacity(inputs.len());
 
-    for index in 0..inputs.len() {
-
-        let owner = keyring
-            .get(inputs[index].key_index as usize)
-            .ok_or_else(|| bad("signing", "no key for one of the outputs being spent"))?;
-
-        let digest = sighash(
-            version,
-            inputs,
-            outputs,
-            index,
-            &owner.pubkey_hash,
-            SEQUENCE,
-            locktime,
-        );
+    for (index, owner) in owners.iter().enumerate() {
+        let digest = if owner.legacy {
+            legacy_digest(version, &outpoints, outputs, index, &script_code(&owner.pubkey_hash), locktime)
+        } else {
+            sighash(version, inputs, outputs, index, &owner.pubkey_hash, SEQUENCE, locktime)
+        };
 
         let signature: Signature = owner
             .signing
@@ -286,21 +344,33 @@ pub fn build_signed(
         let mut der = normalised.to_der().as_bytes().to_vec();
         der.push(SIGHASH_ALL as u8);
 
-        witnesses.push(vec![der, owner.pubkey.clone()]);
+        if owner.legacy {
+            let mut script = Vec::new();
+            push_bytes(&der, &mut script);
+            push_bytes(&owner.pubkey, &mut script);
+            script_sigs.push(script);
+            witnesses.push(Vec::new());
+        } else {
+            script_sigs.push(Vec::new());
+            witnesses.push(vec![der, owner.pubkey.clone()]);
+        }
     }
+
+    let segwit = owners.iter().any(|o| !o.legacy);
 
     let mut tx = Vec::new();
     tx.extend_from_slice(&version.to_le_bytes());
 
-    tx.push(0x00);
-    tx.push(0x01);
+    if segwit {
+        tx.push(0x00);
+        tx.push(0x01);
+    }
 
     varint(inputs.len() as u64, &mut tx);
-    for input in inputs {
+    for (input, script) in inputs.iter().zip(&script_sigs) {
         tx.extend_from_slice(&input.txid);
         tx.extend_from_slice(&input.vout.to_le_bytes());
-
-        tx.push(0x00);
+        push_bytes(script, &mut tx);
         tx.extend_from_slice(&SEQUENCE.to_le_bytes());
     }
 
@@ -310,10 +380,12 @@ pub fn build_signed(
         push_bytes(&output.script, &mut tx);
     }
 
-    for witness in &witnesses {
-        varint(witness.len() as u64, &mut tx);
-        for item in witness {
-            push_bytes(item, &mut tx);
+    if segwit {
+        for witness in &witnesses {
+            varint(witness.len() as u64, &mut tx);
+            for item in witness {
+                push_bytes(item, &mut tx);
+            }
         }
     }
 
@@ -322,6 +394,10 @@ pub fn build_signed(
 }
 
 pub fn txid(signed: &[u8]) -> String {
+    if signed.len() < 6 || signed[4] != 0x00 || signed[5] != 0x01 {
+        let hash = sha256d(signed);
+        return hash.iter().rev().map(|b| format!("{b:02x}")).collect();
+    }
 
     let mut stripped = Vec::with_capacity(signed.len());
     stripped.extend_from_slice(&signed[0..4]);
@@ -420,8 +496,8 @@ pub fn select_outputs(
     let out_value: u64 = fixed.iter().map(|o| o.value).sum();
     let n = fixed.len();
 
-    let fee_for = |inputs: usize, outputs: usize| {
-        (estimated_vsize(inputs, outputs) as f64 * fee_rate).ceil() as u64
+    let fee_for = |inputs: &[Utxo], outputs: usize| {
+        (vsize_of(inputs, outputs) as f64 * fee_rate).ceil() as u64
     };
 
     let mut chosen: Vec<Utxo> = Vec::new();
@@ -431,7 +507,7 @@ pub fn select_outputs(
         chosen.push(utxo.clone());
         total += utxo.value;
 
-        let fee = fee_for(chosen.len(), n + 1);
+        let fee = fee_for(&chosen, n + 1);
         if total >= out_value + fee {
             let change = total - out_value - fee;
             if change >= DUST {
@@ -441,7 +517,7 @@ pub fn select_outputs(
             }
         }
 
-        let lean = fee_for(chosen.len(), n);
+        let lean = fee_for(&chosen, n);
         if total >= out_value + lean {
             return Ok(Plan {
                 inputs: chosen,
@@ -453,7 +529,7 @@ pub fn select_outputs(
     }
 
     let held: u64 = utxos.iter().map(|u| u.value).sum();
-    let needed = out_value + fee_for(utxos.len().max(1), n + 1);
+    let needed = out_value + fee_for(utxos, n + 1);
     Err(WalletError::Funds(format!(
         "This needs about {needed} including fees, but only {held} is confirmed and spendable."
     )))
@@ -464,7 +540,7 @@ pub fn max_sendable(utxos: &[Utxo], fee_rate: f64) -> u64 {
         return 0;
     }
     let total: u64 = utxos.iter().map(|u| u.value).sum();
-    let fee = (estimated_vsize(utxos.len(), 1) as f64 * fee_rate).ceil() as u64;
+    let fee = (vsize_of(utxos, 1) as f64 * fee_rate).ceil() as u64;
     total.saturating_sub(fee)
 }
 
@@ -507,8 +583,8 @@ pub fn fragment(
 
     let remainder = amount - per_piece * pieces as u64;
 
-    let fee_for = |inputs: usize, outputs: usize| {
-        (estimated_vsize(inputs, outputs) as f64 * fee_rate).ceil() as u64
+    let fee_for = |inputs: &[Utxo], outputs: usize| {
+        (vsize_of(inputs, outputs) as f64 * fee_rate).ceil() as u64
     };
 
     let build_outputs = |include_change: bool, change: u64| {
@@ -538,7 +614,7 @@ pub fn fragment(
         chosen.push(utxo.clone());
         total += utxo.value;
 
-        let with_change = fee_for(chosen.len(), pieces as usize + 1);
+        let with_change = fee_for(&chosen, pieces as usize + 1);
         if total >= amount + with_change {
             let change = total - amount - with_change;
             if change >= DUST {
@@ -555,7 +631,7 @@ pub fn fragment(
             }
         }
 
-        let lean = fee_for(chosen.len(), pieces as usize);
+        let lean = fee_for(&chosen, pieces as usize);
         if total >= amount + lean {
             let sources = distinct_sources(&chosen);
             return Ok(FragmentPlan {
@@ -573,7 +649,7 @@ pub fn fragment(
     let held: u64 = utxos.iter().map(|u| u.value).sum();
     Err(WalletError::Funds(format!(
         "Not enough balance. Splitting {amount} into {pieces} pieces needs about {}          including fees, and only {held} is confirmed and spendable.",
-        amount + fee_for(utxos.len().max(1), pieces as usize + 1)
+        amount + fee_for(utxos, pieces as usize + 1)
     )))
 }
 
@@ -612,7 +688,7 @@ pub fn plan_with_outputs(
     let n = fixed.len();
     let total: u64 = inputs.iter().map(|u| u.value).sum();
     let fee_for = |outputs: usize| {
-        (estimated_vsize(inputs.len(), outputs) as f64 * fee_rate).ceil() as u64
+        (vsize_of(inputs, outputs) as f64 * fee_rate).ceil() as u64
     };
 
     let with_change = fee_for(n + 1);
@@ -646,7 +722,7 @@ pub fn consolidate(utxos: &[Utxo], dest_script: Vec<u8>, fee_rate: f64) -> Resul
     }
 
     let total: u64 = utxos.iter().map(|u| u.value).sum();
-    let fee = (estimated_vsize(utxos.len(), 1) as f64 * fee_rate).ceil() as u64;
+    let fee = (vsize_of(utxos, 1) as f64 * fee_rate).ceil() as u64;
 
     if total <= fee + DUST {
         return Err(WalletError::Funds(format!(
@@ -712,12 +788,14 @@ mod tests {
                 vout: 0,
                 value: 625_000_000,
                 key_index: 0,
+                legacy: false,
             },
             Utxo {
                 txid: txid1.try_into().unwrap(),
                 vout: 1,
                 value: 600_000_000,
                 key_index: 0,
+                legacy: false,
             },
         ];
 
@@ -846,6 +924,7 @@ mod tests {
             vout,
             value,
             key_index: 0,
+            legacy: false,
         }
     }
 
@@ -1064,4 +1143,67 @@ mod tests {
         let small = estimated_vsize(1, 1);
         assert!((100..130).contains(&small), "unexpected estimate: {small}");
     }
+
+    #[test]
+    fn legacy_addresses_match_published_vectors() {
+        let seed = crate::crypto::seed::to_seed(
+            &crate::crypto::seed::parse(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            )
+            .unwrap(),
+        );
+        let btc = keys_on(seed.as_ref(), Chain::Bitcoin, true, false, 0).unwrap();
+        assert_eq!(address_of(&btc, Chain::Bitcoin).unwrap(), "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA");
+        let ltc = keys_on(seed.as_ref(), Chain::Litecoin, true, false, 0).unwrap();
+        assert_eq!(address_of(&ltc, Chain::Litecoin).unwrap(), "LUWPbpM43E2p7ZSh8cyTBEkvpHmr3cB8Ez");
+        let ltc_change = keys_on(seed.as_ref(), Chain::Litecoin, true, true, 0).unwrap();
+        assert_eq!(address_of(&ltc_change, Chain::Litecoin).unwrap(), "LPCewns5E4BFTQ8NirD7sJZYFguXEJTxbL");
+        let segwit = keys_at(seed.as_ref(), Chain::Bitcoin, 0).unwrap();
+        assert_eq!(address_of(&segwit, Chain::Bitcoin).unwrap(), "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+    }
+
+    #[test]
+    fn legacy_digest_verifies_the_bip143_p2pk_signature() {
+        use k256::ecdsa::signature::hazmat::PrehashVerifier;
+        use k256::ecdsa::VerifyingKey;
+
+        let txid0: [u8; 32] = unhex("fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f").try_into().unwrap();
+        let txid1: [u8; 32] = unhex("ef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a").try_into().unwrap();
+        let inputs = [(txid0, 0u32, 0xffff_ffeeu32), (txid1, 1u32, 0xffff_ffffu32)];
+        let outputs = vec![
+            Output { script: unhex("76a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac"), value: 112_340_000 },
+            Output { script: unhex("76a9143bde42dbee7e4dbe6a21b2d50ce2f0167faa815988ac"), value: 223_450_000 },
+        ];
+        let code = unhex("2103c9f4836b9a4f77fc0d81f7bcb01b7f1b35916864b9476c241ce9fc198bd25432ac");
+        let digest = legacy_digest(1, &inputs, &outputs, 0, &code, 0x11);
+
+        let key = SigningKey::from_slice(&unhex("bbc27228ddcb9209d7fd6f36b02f7dfa6252af40bb2f1cbc7a557da8027ff866")).unwrap();
+        assert_eq!(hex(key.verifying_key().to_encoded_point(true).as_bytes()), "03c9f4836b9a4f77fc0d81f7bcb01b7f1b35916864b9476c241ce9fc198bd25432");
+        let der = unhex("30450221008b9d1dc26ba6a9cb62127b02742fa9d754cd3bebf337f7a55d114c8e5cdd30be022040529b194ba3f9281a99f2b1c0a19c0489bc22ede944ccf4ecbab4cc618ef3ed");
+        let sig = Signature::from_der(&der).unwrap();
+        VerifyingKey::from(&key).verify_prehash(&digest, &sig).expect("the published signature verifies");
+    }
+
+    #[test]
+    fn mixed_and_legacy_transactions_serialise_and_hash() {
+        let seed = [7u8; 64];
+        let segwit = keys_on(&seed, Chain::Litecoin, false, false, 0).unwrap();
+        let legacy = keys_on(&seed, Chain::Litecoin, true, false, 0).unwrap();
+        let keyring = vec![segwit, legacy];
+        let out = vec![Output { script: own_script(&keyring[0].pubkey_hash), value: 50_000 }];
+
+        let only_legacy = vec![Utxo { txid: [1; 32], vout: 0, value: 60_000, key_index: 1, legacy: true }];
+        let tx = build_signed(&keyring, &only_legacy, &out, 0).unwrap();
+        assert_ne!(tx[4], 0x00, "a legacy-only transaction has no segwit marker");
+        assert_eq!(txid(&tx).len(), 64);
+
+        let mixed = vec![
+            Utxo { txid: [2; 32], vout: 0, value: 30_000, key_index: 0, legacy: false },
+            Utxo { txid: [3; 32], vout: 1, value: 30_000, key_index: 1, legacy: true },
+        ];
+        let tx = build_signed(&keyring, &mixed, &out, 0).unwrap();
+        assert_eq!((tx[4], tx[5]), (0x00, 0x01));
+        assert!(vsize_of(&mixed, 1) > vsize_of(&mixed[..1], 1));
+    }
+
 }

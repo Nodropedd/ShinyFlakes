@@ -87,6 +87,7 @@ impl AppState {
         if let Ok(mut guard) = self.unlocked.lock() {
             *guard = None;
         }
+        crate::chains::set_sol_exodus(false);
 
         if let Ok(mut tf) = self.two_factor.lock() {
             *tf = TwoFactor::default();

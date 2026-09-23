@@ -1,56 +1,56 @@
 {
-  "version": "0.1.2",
-  "tag": "v0.1.2",
+  "version": "0.1.3",
+  "tag": "v0.1.3",
   "date": "2026-09-23",
   "assets": [
     {
       "key": "ShinyFlakes-android.apk",
-      "name": "ShinyFlakes-android-0.1.2.apk",
-      "size": 41990422,
-      "sha256": "6dba50b1cad88deada0ef9e54f214f87c048d695262883dd1a05f922fc6ad524",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-android-0.1.2.apk"
+      "name": "ShinyFlakes-android-0.1.3.apk",
+      "size": 42023190,
+      "sha256": "d02dbd991e839189297b254885619478f3396d64358e270d6c377e8e4881532e",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-android-0.1.3.apk"
     },
     {
       "key": "ShinyFlakes-windows-x64-setup.exe",
       "name": "ShinyFlakes-windows-x64-setup.exe",
-      "size": 2584905,
-      "sha256": "890b3059b94cd839bcc5c88f288dac458fb375c6940294b194298d577adf5774",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-windows-x64-setup.exe"
+      "size": 2593927,
+      "sha256": "bb586670479d1ee708bcd823b39bf4300645cb25974fbaae1c49c01536ccc529",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-windows-x64-setup.exe"
     },
     {
       "key": "ShinyFlakes-windows-x64-portable.exe",
       "name": "ShinyFlakes-windows-x64-portable.exe",
-      "size": 6321664,
-      "sha256": "a3cb5367c8bc1e60611f28ac50a78231396384f8ebe83376997fceb32d6d263a",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-windows-x64-portable.exe"
+      "size": 6349824,
+      "sha256": "5543df9ef9e28f79defc0595d4b19258676e6bbdad8901cba75d9562aed18ae1",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-windows-x64-portable.exe"
     },
     {
       "key": "ShinyFlakes-linux-x86_64.AppImage",
       "name": "ShinyFlakes-linux-x86_64.AppImage",
-      "size": 82094584,
-      "sha256": "09ec405d5069ebd090919c580beaa4eba819dd5589262b85e53b9bf30985a0d4",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-linux-x86_64.AppImage"
+      "size": 82119160,
+      "sha256": "1088fdf0a7c7de8410497c963664f234fd9235bf35b96074133995f2d8c3539a",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-linux-x86_64.AppImage"
     },
     {
       "key": "ShinyFlakes-linux-amd64.deb",
       "name": "ShinyFlakes-linux-amd64.deb",
-      "size": 3987596,
-      "sha256": "713424b5d69f40dd45d4a24431cc4a7f1eb5217137afe93a989d2c729c27ca1d",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-linux-amd64.deb"
+      "size": 4005242,
+      "sha256": "aaa47fa57c0a4394136ca857a7bf81e0874d6272686cfc607ec4b25219373605",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-linux-amd64.deb"
     },
     {
       "key": "ShinyFlakes-linux-x86_64.rpm",
       "name": "ShinyFlakes-linux-x86_64.rpm",
-      "size": 3988676,
-      "sha256": "971dd95e3d9a63807bcdb609c912585aed028fced08780b1d3d1ab48208ce916",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-linux-x86_64.rpm"
+      "size": 4006721,
+      "sha256": "8d77f989e27a7282d15b5bd1c50434ededd4f16b0e981b582b61194cf1350a6c",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-linux-x86_64.rpm"
     },
     {
       "key": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
       "name": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
-      "size": 3073512,
-      "sha256": "f2b81be8b35b6b15fd9ac173a18f980bf0168ddca84a01f5c8bcce86c050ed3f",
-      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.2/ShinyFlakes-arch-x86_64.pkg.tar.zst"
+      "size": 3085320,
+      "sha256": "fdfbb71d7ff8181bd871e8d514609dc29b8ae3767024698622ea6abca77e1233",
+      "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.3/ShinyFlakes-arch-x86_64.pkg.tar.zst"
     }
   ]
 }

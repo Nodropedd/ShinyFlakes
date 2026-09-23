@@ -50,6 +50,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub sign_in_paused: bool,
+
+    #[serde(default)]
+    pub sol_exodus_for: Option<String>,
 }
 
 pub fn is_unreadable(app_data: &Path) -> bool {
@@ -152,6 +155,7 @@ mod tests {
             step_up: StepUp::default(),
             stay_signed_in: true,
             sign_in_paused: false,
+            sol_exodus_for: Some("wallet".into()),
         };
         save(&d, &cfg).unwrap();
 

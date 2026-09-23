@@ -4,7 +4,6 @@ use curve25519_dalek::edwards::CompressedEdwardsY;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
-use super::slip10;
 use crate::error::{Result, WalletError};
 
 const SYSTEM_PROGRAM: [u8; 32] = [0u8; 32];
@@ -98,9 +97,8 @@ pub fn build_message_multi(
     msg
 }
 
-pub fn signing_key(seed: &[u8]) -> SigningKey {
-    let node = slip10::derive(seed, super::SOL_PATH);
-    SigningKey::from_bytes(&node.key)
+pub fn signing_key(seed: &[u8]) -> Result<SigningKey> {
+    super::sol_key(seed, super::sol_exodus())
 }
 
 pub fn signed_transfer(
@@ -109,7 +107,7 @@ pub fn signed_transfer(
     lamports: u64,
     blockhash: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    let key = signing_key(seed);
+    let key = signing_key(seed)?;
     let from = key.verifying_key().to_bytes();
     let to = parse_address(to)?;
 
@@ -129,7 +127,7 @@ pub fn signed_transfer_with_fee(
     fee_lamports: u64,
     blockhash: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    let key = signing_key(seed);
+    let key = signing_key(seed)?;
     let from = key.verifying_key().to_bytes();
     let to = parse_address(to)?;
     if from == to {
@@ -266,7 +264,7 @@ pub fn signed_spl_transfer(
     decimals: u8,
     blockhash: &[u8; 32],
 ) -> Result<Vec<u8>> {
-    let key = signing_key(seed);
+    let key = signing_key(seed)?;
     let owner = key.verifying_key().to_bytes();
     let recipient = parse_address(to)?;
     let mint = parse_address(mint)?;
@@ -324,7 +322,7 @@ mod tests {
     #[test]
     fn refuses_to_send_to_itself() {
         let seed = test_seed();
-        let own = bs58::encode(signing_key(&seed).verifying_key().to_bytes()).into_string();
+        let own = bs58::encode(signing_key(&seed).unwrap().verifying_key().to_bytes()).into_string();
         assert!(signed_transfer(&seed, &own, 1, &[7u8; 32]).is_err());
     }
 
@@ -382,7 +380,7 @@ mod tests {
     #[test]
     fn real_keys_are_on_curve_and_atas_are_not() {
 
-        let owner = signing_key(&test_seed()).verifying_key().to_bytes();
+        let owner = signing_key(&test_seed()).unwrap().verifying_key().to_bytes();
         assert!(on_curve(&owner), "a real public key is on the curve");
         let mint = parse_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
         assert!(on_curve(&mint), "a mint address is a real key, on the curve");
@@ -392,7 +390,7 @@ mod tests {
 
     #[test]
     fn ata_is_deterministic_and_mint_specific() {
-        let owner = signing_key(&test_seed()).verifying_key().to_bytes();
+        let owner = signing_key(&test_seed()).unwrap().verifying_key().to_bytes();
         let usdc = parse_address("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
         let usdt = parse_address("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB").unwrap();
         assert_eq!(
@@ -439,7 +437,7 @@ mod tests {
         );
         let message = &tx[65..];
 
-        let key = signing_key(&seed).verifying_key();
+        let key = signing_key(&seed).unwrap().verifying_key();
         assert!(key.verify(message, &signature).is_ok());
     }
 }
