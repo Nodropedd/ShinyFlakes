@@ -34,6 +34,7 @@ object Diagnostics {
   private const val TEST_HANG = "test-hang"
   private const val HEALTHY = "healthy"
   const val REPORT_SHOWN = "showing previous-start report"
+  private const val FREEZE_KILL_MS = 10_000L
 
   private val BG = Color.parseColor("#14161b")
   private val TEXT = Color.parseColor("#e8eaef")
@@ -45,6 +46,8 @@ object Diagnostics {
   )
 
   @Volatile private var dir: File? = null
+  @Volatile private var app: Context? = null
+  @Volatile var launcherRan = false
   @Volatile private var runStart = 0L
   @Volatile private var lastStage = "starting"
   @Volatile private var healthy = false
@@ -52,6 +55,7 @@ object Diagnostics {
   // run log
   fun beginRun(context: Context) {
     runStart = SystemClock.uptimeMillis()
+    app = context
     val d = context.filesDir ?: return
     dir = d
     rotate(File(d, LOG), File(d, PREV_LOG))
@@ -105,6 +109,16 @@ object Diagnostics {
         }
         val stuck = SystemClock.uptimeMillis() - beat.get()
         if (stuck > 4_000) writeHang(stuck, mainThread.stackTrace)
+        // frozen start: close, so the next open reports it
+        if (stuck > FREEZE_KILL_MS) {
+          stage("closed itself after ${stuck / 1000} s frozen")
+          // drop the task, so reopening starts at the launcher
+          try {
+            app?.getSystemService(ActivityManager::class.java)?.appTasks?.forEach { it.finishAndRemoveTask() }
+          } catch (_: Throwable) {
+          }
+          android.os.Process.killProcess(android.os.Process.myPid())
+        }
       }
     }, "sf-freeze-watch").apply { isDaemon = true }.start()
   }
@@ -266,6 +280,12 @@ object Diagnostics {
       isFillViewport = true
       addView(column, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
+  }
+
+  fun versionName(context: Context): String = try {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+  } catch (t: Throwable) {
+    ""
   }
 
   private fun appVersion(context: Context): String = try {

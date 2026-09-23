@@ -48,9 +48,15 @@
       }
       const sums = document.getElementById("sums");
       for (const asset of release.assets || []) {
-        const row = document.querySelector(`.file[data-asset="${CSS.escape(asset.name)}"]`);
+        const row = document.querySelector(`.file[data-asset="${CSS.escape(asset.key || asset.name)}"]`);
         const size = row && row.querySelector(".f-size");
         if (size && asset.size) size.textContent = humanSize(asset.size);
+        // exact file for this version, no redirect
+        const link = row && row.querySelector(".f-dl");
+        if (link && asset.url) {
+          if (primary && primary.href === link.href) primary.href = asset.url;
+          link.href = asset.url;
+        }
 
         if (sums && asset.sha256) {
           const item = document.createElement("li");

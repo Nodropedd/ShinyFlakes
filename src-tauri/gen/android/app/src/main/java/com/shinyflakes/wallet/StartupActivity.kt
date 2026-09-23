@@ -21,6 +21,7 @@ class StartupActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     Diagnostics.stage("StartupActivity created")
+    Diagnostics.launcherRan = true
     val bg = Color.parseColor("#14161b")
     window.statusBarColor = bg
     window.navigationBarColor = bg
@@ -46,9 +47,9 @@ class StartupActivity : Activity() {
 
   private fun start(force: Boolean) {
     setContentView(TextView(this).apply {
-      text = "Starting ShinyFlakes…"
-      setTextColor(Color.parseColor("#939aa8"))
-      textSize = 14f
+      text = "Starting ShinyFlakes ${Diagnostics.versionName(this@StartupActivity)}…"
+      setTextColor(Color.parseColor("#c4c9d4"))
+      textSize = 16f
       gravity = Gravity.CENTER
       setBackgroundColor(Color.parseColor("#14161b"))
     })

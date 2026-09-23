@@ -315,6 +315,7 @@
         </div>
       {/if}
     {/if}
+    <p class="version">ShinyFlakes {__APP_VERSION__}</p>
   </div>
 </div>
 
@@ -403,6 +404,14 @@
 
   .link:hover {
     color: var(--text);
+  }
+
+  .version {
+    margin-top: 18px;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-align: center;
+    opacity: 0.7;
   }
 
   .words {

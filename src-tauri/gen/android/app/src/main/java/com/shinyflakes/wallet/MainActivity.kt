@@ -44,7 +44,18 @@ class MainActivity : TauriActivity() {
 
     if (Diagnostics.takeTestHang()) {
       Diagnostics.stage("test freeze")
-      SystemClock.sleep(8_000)
+      SystemClock.sleep(15_000)
+    }
+
+    // recreated without the launcher after a failed start
+    if (!Diagnostics.launcherRan) {
+      Diagnostics.previousRunReport(this)?.let { previous ->
+        Diagnostics.stage(Diagnostics.REPORT_SHOWN)
+        report = Diagnostics.reportView(this, "ShinyFlakes didn't start last time", previous,
+          listOf("Continue" to { dismissReport() })).also {
+          addContentView(it, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+      }
     }
 
     val force = intent?.getBooleanExtra(Diagnostics.FORCE_EXTRA, false) == true

@@ -13,7 +13,9 @@ import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const NAMES = [
+// Stable keys the page uses. The APK gets its version in its file name, so
+// repeated downloads on a phone never pile up under one name.
+const KEYS = [
   "ShinyFlakes-android.apk",
   "ShinyFlakes-windows-x64-setup.exe",
   "ShinyFlakes-windows-x64-portable.exe",
@@ -23,6 +25,7 @@ const NAMES = [
   "ShinyFlakes-arch-x86_64.pkg.tar.zst",
 ];
 
+const REPO = "Nodropedd/ShinyFlakes";
 const folder = process.argv[2];
 if (!folder) {
   console.error("usage: node scripts/site-release.mjs <folder with the release files>");
@@ -31,6 +34,9 @@ if (!folder) {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const conf = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+const tag = `v${conf.version}`;
+const fileFor = (key) =>
+  key === "ShinyFlakes-android.apk" ? `ShinyFlakes-android-${conf.version}.apk` : key;
 
 const sha256 = (path) =>
   new Promise((resolve, reject) => {
@@ -42,7 +48,8 @@ const sha256 = (path) =>
   });
 
 const assets = [];
-for (const name of NAMES) {
+for (const key of KEYS) {
+  const name = fileFor(key);
   const path = join(folder, name);
   let size;
   try {
@@ -51,7 +58,13 @@ for (const name of NAMES) {
     console.error(`missing: ${name}`);
     process.exit(1);
   }
-  assets.push({ name, size, sha256: await sha256(path) });
+  assets.push({
+    key,
+    name,
+    size,
+    sha256: await sha256(path),
+    url: `https://github.com/${REPO}/releases/download/${tag}/${name}`,
+  });
 }
 
 writeFileSync(
@@ -63,7 +76,7 @@ writeFileSync(
   JSON.stringify(
     {
       version: conf.version,
-      tag: `v${conf.version}`,
+      tag,
       date: new Date().toISOString().slice(0, 10),
       assets,
     },
