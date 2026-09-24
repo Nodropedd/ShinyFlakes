@@ -97,8 +97,13 @@ pub const SOL_PATH_TEXT: &str = "m/44'/501'/0'/0'";
 pub const SOL_EXODUS_PATH_TEXT: &str = "m/44'/501'/0'/0/0";
 
 pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
-    let btc = p2wpkh(seed, BTC_PATH, "bc")?;
-    let ltc = p2wpkh(seed, LTC_PATH, "ltc")?;
+    let home = |chain: btc_tx::Chain| -> Result<(String, String)> {
+        let kind = btc_tx::preferred(chain);
+        let keys = btc_tx::keys_on(seed, chain, kind, false, 0)?;
+        Ok((btc_tx::address_of(&keys, chain)?, btc_tx::path_of(chain, kind, false, 0)))
+    };
+    let (btc, btc_path) = home(btc_tx::Chain::Bitcoin)?;
+    let (ltc, ltc_path) = home(btc_tx::Chain::Litecoin)?;
     let trx = tron(seed, TRON_PATH)?;
     let sol = sol_address(seed, sol_exodus())?;
     let sol_path = if sol_exodus() { SOL_EXODUS_PATH_TEXT } else { SOL_PATH_TEXT };
@@ -123,8 +128,8 @@ pub fn addresses(seed: &[u8]) -> Result<Vec<AssetAddress>> {
     };
 
     Ok(vec![
-        owned("BTC", &btc, BTC_PATH),
-        owned("LTC", &ltc, LTC_PATH),
+        owned("BTC", &btc, &btc_path),
+        owned("LTC", &ltc, &ltc_path),
         owned("XMR", &xmr, xmr::XMR_PATH),
         owned("ETH", &eth_address, eth::ETH_PATH),
         owned("SOL", &sol, sol_path),

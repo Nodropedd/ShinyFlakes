@@ -346,7 +346,8 @@ export const ipc = {
 
   generateMnemonic: () => call<string>("generate_mnemonic"),
 
-  createVault: (mnemonic: string) => call<void>("create_vault", { mnemonic }),
+  createVault: (mnemonic: string, fresh = false) =>
+    call<void>("create_vault", { mnemonic, fresh }),
 
   unlock: (mnemonic: string, passphrase?: string | null) =>
     call<void>("unlock", { mnemonic, passphrase }),

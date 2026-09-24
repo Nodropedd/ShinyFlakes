@@ -42,6 +42,61 @@ impl Chain {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Kind {
+    #[default]
+    Segwit,
+    Nested,
+    Legacy,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 3] = [Kind::Segwit, Kind::Nested, Kind::Legacy];
+
+    fn purpose(self) -> u32 {
+        match self {
+            Kind::Segwit => 84,
+            Kind::Nested => 49,
+            Kind::Legacy => 44,
+        }
+    }
+
+    fn input_vbytes(self) -> usize {
+        match self {
+            Kind::Segwit => 68,
+            Kind::Nested => 91,
+            Kind::Legacy => 148,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Kind::Segwit => 0,
+            Kind::Nested => 2,
+            Kind::Legacy => 1,
+        }
+    }
+
+    pub fn from_code(code: u8) -> Kind {
+        match code {
+            1 => Kind::Legacy,
+            2 => Kind::Nested,
+            _ => Kind::Segwit,
+        }
+    }
+}
+
+static PREFERRED: [std::sync::atomic::AtomicU8; 2] =
+    [std::sync::atomic::AtomicU8::new(0), std::sync::atomic::AtomicU8::new(0)];
+
+pub fn preferred(chain: Chain) -> Kind {
+    Kind::from_code(PREFERRED[chain as usize].load(std::sync::atomic::Ordering::SeqCst))
+}
+
+pub fn set_preferred(chain: Chain, kind: Kind) {
+    PREFERRED[chain as usize].store(kind.code(), std::sync::atomic::Ordering::SeqCst);
+}
+
 #[derive(Clone, Debug)]
 pub struct Utxo {
 
@@ -51,7 +106,7 @@ pub struct Utxo {
 
     pub key_index: u32,
 
-    pub legacy: bool,
+    pub kind: Kind,
 }
 
 fn bad(what: &str, e: impl std::fmt::Display) -> WalletError {
@@ -148,17 +203,19 @@ pub struct Keys {
     pub signing: SigningKey,
     pub pubkey: Vec<u8>,
     pub pubkey_hash: [u8; 20],
-    pub legacy: bool,
-    pub change: bool,
+    pub kind: Kind,
 }
 
 pub fn keys_at(seed: &[u8], chain: Chain, index: u32) -> Result<Keys> {
-    keys_on(seed, chain, false, false, index)
+    keys_on(seed, chain, Kind::Segwit, false, index)
 }
 
-pub fn keys_on(seed: &[u8], chain: Chain, legacy: bool, change: bool, index: u32) -> Result<Keys> {
-    let purpose = if legacy { 44 } else { 84 };
-    let full = format!("m/{purpose}'/{}'/0'/{}/{index}", chain.coin_type(), change as u32);
+pub fn path_of(chain: Chain, kind: Kind, change: bool, index: u32) -> String {
+    format!("m/{}'/{}'/0'/{}/{index}", kind.purpose(), chain.coin_type(), change as u32)
+}
+
+pub fn keys_on(seed: &[u8], chain: Chain, kind: Kind, change: bool, index: u32) -> Result<Keys> {
+    let full = path_of(chain, kind, change, index);
 
     let path: DerivationPath = full.parse().map_err(|e| bad("path", e))?;
     let xprv = XPrv::derive_from_path(seed, &path).map_err(|e| bad("derive", e))?;
@@ -172,18 +229,30 @@ pub fn keys_on(seed: &[u8], chain: Chain, legacy: bool, change: bool, index: u32
         signing,
         pubkey,
         pubkey_hash,
-        legacy,
-        change,
+        kind,
     })
 }
 
+fn redeem_script(pubkey_hash: &[u8; 20]) -> Vec<u8> {
+    let mut script = vec![0x00];
+    push_bytes(pubkey_hash, &mut script);
+    script
+}
+
 pub fn address_of(keys: &Keys, chain: Chain) -> Result<String> {
-    if keys.legacy {
-        let mut body = vec![chain.legacy_versions().0];
-        body.extend_from_slice(&keys.pubkey_hash);
-        Ok(bs58::encode(body).with_check().into_string())
-    } else {
-        own_address(&keys.pubkey_hash, chain)
+    let (p2pkh, p2sh) = chain.legacy_versions();
+    let body = match keys.kind {
+        Kind::Segwit => return own_address(&keys.pubkey_hash, chain),
+        Kind::Legacy => [&[p2pkh][..], &keys.pubkey_hash[..]].concat(),
+        Kind::Nested => [&[p2sh][..], &hash160(&redeem_script(&keys.pubkey_hash))[..]].concat(),
+    };
+    Ok(bs58::encode(body).with_check().into_string())
+}
+
+pub fn script_of(keys: &Keys, chain: Chain) -> Result<Vec<u8>> {
+    match keys.kind {
+        Kind::Segwit => Ok(own_script(&keys.pubkey_hash)),
+        _ => script_pubkey_for(&address_of(keys, chain)?, chain),
     }
 }
 
@@ -264,7 +333,7 @@ pub fn estimated_vsize(inputs: usize, outputs: usize) -> u64 {
 }
 
 pub fn vsize_of(inputs: &[Utxo], outputs: usize) -> u64 {
-    let spent: usize = inputs.iter().map(|u| if u.legacy { 148 } else { 68 }).sum();
+    let spent: usize = inputs.iter().map(|u| u.kind.input_vbytes()).sum();
     (12 + spent.max(68) + outputs * 43) as u64
 }
 
@@ -328,7 +397,7 @@ pub fn build_signed(
     let mut witnesses: Vec<Vec<Vec<u8>>> = Vec::with_capacity(inputs.len());
 
     for (index, owner) in owners.iter().enumerate() {
-        let digest = if owner.legacy {
+        let digest = if owner.kind == Kind::Legacy {
             legacy_digest(version, &outpoints, outputs, index, &script_code(&owner.pubkey_hash), locktime)
         } else {
             sighash(version, inputs, outputs, index, &owner.pubkey_hash, SEQUENCE, locktime)
@@ -344,19 +413,28 @@ pub fn build_signed(
         let mut der = normalised.to_der().as_bytes().to_vec();
         der.push(SIGHASH_ALL as u8);
 
-        if owner.legacy {
-            let mut script = Vec::new();
-            push_bytes(&der, &mut script);
-            push_bytes(&owner.pubkey, &mut script);
-            script_sigs.push(script);
-            witnesses.push(Vec::new());
-        } else {
-            script_sigs.push(Vec::new());
-            witnesses.push(vec![der, owner.pubkey.clone()]);
+        match owner.kind {
+            Kind::Legacy => {
+                let mut script = Vec::new();
+                push_bytes(&der, &mut script);
+                push_bytes(&owner.pubkey, &mut script);
+                script_sigs.push(script);
+                witnesses.push(Vec::new());
+            }
+            Kind::Nested => {
+                let mut script = Vec::new();
+                push_bytes(&redeem_script(&owner.pubkey_hash), &mut script);
+                script_sigs.push(script);
+                witnesses.push(vec![der, owner.pubkey.clone()]);
+            }
+            Kind::Segwit => {
+                script_sigs.push(Vec::new());
+                witnesses.push(vec![der, owner.pubkey.clone()]);
+            }
         }
     }
 
-    let segwit = owners.iter().any(|o| !o.legacy);
+    let segwit = owners.iter().any(|o| o.kind != Kind::Legacy);
 
     let mut tx = Vec::new();
     tx.extend_from_slice(&version.to_le_bytes());
@@ -788,14 +866,14 @@ mod tests {
                 vout: 0,
                 value: 625_000_000,
                 key_index: 0,
-                legacy: false,
+                kind: Kind::Segwit,
             },
             Utxo {
                 txid: txid1.try_into().unwrap(),
                 vout: 1,
                 value: 600_000_000,
                 key_index: 0,
-                legacy: false,
+                kind: Kind::Segwit,
             },
         ];
 
@@ -924,7 +1002,7 @@ mod tests {
             vout,
             value,
             key_index: 0,
-            legacy: false,
+            kind: Kind::Segwit,
         }
     }
 
@@ -1152,14 +1230,36 @@ mod tests {
             )
             .unwrap(),
         );
-        let btc = keys_on(seed.as_ref(), Chain::Bitcoin, true, false, 0).unwrap();
+        let btc = keys_on(seed.as_ref(), Chain::Bitcoin, Kind::Legacy, false, 0).unwrap();
         assert_eq!(address_of(&btc, Chain::Bitcoin).unwrap(), "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA");
-        let ltc = keys_on(seed.as_ref(), Chain::Litecoin, true, false, 0).unwrap();
+        let ltc = keys_on(seed.as_ref(), Chain::Litecoin, Kind::Legacy, false, 0).unwrap();
         assert_eq!(address_of(&ltc, Chain::Litecoin).unwrap(), "LUWPbpM43E2p7ZSh8cyTBEkvpHmr3cB8Ez");
-        let ltc_change = keys_on(seed.as_ref(), Chain::Litecoin, true, true, 0).unwrap();
+        let ltc_change = keys_on(seed.as_ref(), Chain::Litecoin, Kind::Legacy, true, 0).unwrap();
         assert_eq!(address_of(&ltc_change, Chain::Litecoin).unwrap(), "LPCewns5E4BFTQ8NirD7sJZYFguXEJTxbL");
         let segwit = keys_at(seed.as_ref(), Chain::Bitcoin, 0).unwrap();
         assert_eq!(address_of(&segwit, Chain::Bitcoin).unwrap(), "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu");
+        let nested = keys_on(seed.as_ref(), Chain::Bitcoin, Kind::Nested, false, 0).unwrap();
+        assert_eq!(address_of(&nested, Chain::Bitcoin).unwrap(), "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf");
+        let nested_ltc = keys_on(seed.as_ref(), Chain::Litecoin, Kind::Nested, false, 0).unwrap();
+        assert_eq!(address_of(&nested_ltc, Chain::Litecoin).unwrap(), "M7wtsL7wSHDBJVMWWhtQfTMSYYkyooAAXM");
+        for keys in [&ltc, &nested_ltc, &segwit] {
+            let chain = if keys.pubkey_hash == segwit.pubkey_hash { Chain::Bitcoin } else { Chain::Litecoin };
+            assert_eq!(script_of(keys, chain).unwrap(), script_pubkey_for(&address_of(keys, chain).unwrap(), chain).unwrap());
+        }
+    }
+
+    #[test]
+    fn nested_segwit_uses_the_bip143_p2sh_p2wpkh_sighash() {
+        let txid: [u8; 32] = unhex("db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477").try_into().unwrap();
+        let inputs = vec![Utxo { txid, vout: 1, value: 1_000_000_000, key_index: 0, kind: Kind::Nested }];
+        let outputs = vec![
+            Output { script: unhex("76a914a457b684d7f0d539a46a45bbc043f35b59d0d96388ac"), value: 199_996_600 },
+            Output { script: unhex("76a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6d77c88ac"), value: 800_000_000 },
+        ];
+        let pkh: [u8; 20] = unhex("79091972186c449eb1ded22b78e40d009bdf0089").try_into().unwrap();
+        assert_eq!(hex(&redeem_script(&pkh)), "001479091972186c449eb1ded22b78e40d009bdf0089");
+        let digest = sighash(1, &inputs, &outputs, 0, &pkh, 0xffff_fffe, 1170);
+        assert_eq!(hex(&digest), "64f3b0f4dd2bb3aa1ce8566d220cc74dda9df97d8490cc81d89d735c92e59fb6");
     }
 
     #[test]
@@ -1187,22 +1287,29 @@ mod tests {
     #[test]
     fn mixed_and_legacy_transactions_serialise_and_hash() {
         let seed = [7u8; 64];
-        let segwit = keys_on(&seed, Chain::Litecoin, false, false, 0).unwrap();
-        let legacy = keys_on(&seed, Chain::Litecoin, true, false, 0).unwrap();
-        let keyring = vec![segwit, legacy];
+        let segwit = keys_on(&seed, Chain::Litecoin, Kind::Segwit, false, 0).unwrap();
+        let legacy = keys_on(&seed, Chain::Litecoin, Kind::Legacy, false, 0).unwrap();
+        let nested = keys_on(&seed, Chain::Litecoin, Kind::Nested, false, 0).unwrap();
+        let keyring = vec![segwit, legacy, nested];
         let out = vec![Output { script: own_script(&keyring[0].pubkey_hash), value: 50_000 }];
 
-        let only_legacy = vec![Utxo { txid: [1; 32], vout: 0, value: 60_000, key_index: 1, legacy: true }];
+        let only_legacy = vec![Utxo { txid: [1; 32], vout: 0, value: 60_000, key_index: 1, kind: Kind::Legacy }];
         let tx = build_signed(&keyring, &only_legacy, &out, 0).unwrap();
         assert_ne!(tx[4], 0x00, "a legacy-only transaction has no segwit marker");
         assert_eq!(txid(&tx).len(), 64);
 
         let mixed = vec![
-            Utxo { txid: [2; 32], vout: 0, value: 30_000, key_index: 0, legacy: false },
-            Utxo { txid: [3; 32], vout: 1, value: 30_000, key_index: 1, legacy: true },
+            Utxo { txid: [2; 32], vout: 0, value: 30_000, key_index: 0, kind: Kind::Segwit },
+            Utxo { txid: [3; 32], vout: 1, value: 30_000, key_index: 1, kind: Kind::Legacy },
         ];
         let tx = build_signed(&keyring, &mixed, &out, 0).unwrap();
         assert_eq!((tx[4], tx[5]), (0x00, 0x01));
+
+        let with_nested = vec![Utxo { txid: [4; 32], vout: 0, value: 60_000, key_index: 2, kind: Kind::Nested }];
+        let tx = build_signed(&keyring, &with_nested, &out, 0).unwrap();
+        assert_eq!((tx[4], tx[5]), (0x00, 0x01));
+        assert_eq!(tx[4 + 2 + 1 + 36], 23, "nested input carries its 22-byte redeem script push");
+        assert_eq!(txid(&tx).len(), 64);
         assert!(vsize_of(&mixed, 1) > vsize_of(&mixed[..1], 1));
     }
 

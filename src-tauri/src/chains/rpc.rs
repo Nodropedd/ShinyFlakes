@@ -271,7 +271,7 @@ pub async fn esplora_utxos(
                         vout: u.vout,
                         value: u.value,
                         key_index,
-                        legacy: false,
+                        kind: super::btc_tx::Kind::Segwit,
                     });
                 }
                 out.sort_by(|a, b| b.value.cmp(&a.value));
@@ -981,15 +981,6 @@ pub async fn sol_simulate(tx: &[u8]) -> Result<()> {
 pub async fn sol_rent_exempt_minimum() -> Result<u64> {
     let c = client()?;
     sol_rpc(&c, "getMinimumBalanceForRentExemption", serde_json::json!([0])).await
-}
-
-pub async fn sol_has_activity(address: &str) -> Result<bool> {
-    let found: Vec<serde_json::Value> = sol_call(
-        "getSignaturesForAddress",
-        serde_json::json!([address, { "limit": 1 }]),
-    )
-    .await?;
-    Ok(!found.is_empty())
 }
 
 pub async fn sol_balance_of(address: &str) -> Result<i128> {

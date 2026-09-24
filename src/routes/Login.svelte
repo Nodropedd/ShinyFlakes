@@ -115,7 +115,7 @@
     if (!newMnemonic || !backedUp) return;
     busy = true;
     try {
-      await ipc.createVault(newMnemonic);
+      await ipc.createVault(newMnemonic, true);
       newMnemonic = null;
       await session.refresh();
     } catch (e) {

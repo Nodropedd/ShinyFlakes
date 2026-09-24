@@ -53,6 +53,17 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub sol_exodus_for: Option<String>,
+
+    #[serde(default)]
+    pub wallet_prefs: Option<WalletPrefs>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct WalletPrefs {
+    pub id: String,
+    pub sol_exodus: Option<bool>,
+    pub btc: Option<u8>,
+    pub ltc: Option<u8>,
 }
 
 pub fn is_unreadable(app_data: &Path) -> bool {
@@ -156,6 +167,7 @@ mod tests {
             stay_signed_in: true,
             sign_in_paused: false,
             sol_exodus_for: Some("wallet".into()),
+            wallet_prefs: Some(WalletPrefs { id: "wallet".into(), sol_exodus: Some(true), btc: None, ltc: Some(1) }),
         };
         save(&d, &cfg).unwrap();
 
