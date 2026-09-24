@@ -56,6 +56,9 @@ pub fn create_vault(mnemonic: String, fresh: Option<bool>, state: State<AppState
 
     let parsed = seed::parse(&phrase)?;
     let key = keychain::load_or_create()?;
+    if crate::appconfig::is_unreadable(&state.data_dir) {
+        crate::appconfig::discard(&state.data_dir);
+    }
 
     let payload = VaultPayload {
         mnemonic: parsed.to_string(),
@@ -1240,7 +1243,9 @@ pub fn forget_wallet(state: State<AppState>) -> Result<()> {
         Err(e) => return Err(WalletError::Storage(e.to_string())),
     }
 
-    keychain::forget()
+    keychain::forget()?;
+    crate::appconfig::discard(&state.data_dir);
+    Ok(())
 }
 
 #[tauri::command]

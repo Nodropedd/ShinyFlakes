@@ -80,6 +80,10 @@ pub fn reset(app_data: &Path) -> Result<()> {
     save(app_data, &AppConfig::default())
 }
 
+pub fn discard(app_data: &Path) {
+    let _ = std::fs::remove_file(path(app_data));
+}
+
 fn path(app_data: &Path) -> PathBuf {
     app_data.join("config.dat")
 }
@@ -154,6 +158,23 @@ mod tests {
         let d = dir();
         let cfg = load(&d).unwrap();
         assert!(!cfg.two_factor);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_new_key_cannot_read_the_old_file_until_it_is_discarded() {
+        let d = dir();
+        let cfg = AppConfig { two_factor: true, ..Default::default() };
+        save(&d, &cfg).unwrap();
+        assert!(load(&d).unwrap().two_factor);
+
+        crate::keychain::forget().unwrap();
+        assert!(is_unreadable(&d), "the old file is sealed with the deleted key");
+
+        discard(&d);
+        assert!(!is_unreadable(&d));
+        assert!(!load(&d).unwrap().two_factor);
+        let _ = crate::keychain::forget();
         let _ = std::fs::remove_dir_all(&d);
     }
 

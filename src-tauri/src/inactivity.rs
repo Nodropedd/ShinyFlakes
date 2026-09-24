@@ -252,6 +252,7 @@ fn wipe(app_data: &Path, vault_path: &Path) -> bool {
     }
     if wiped {
         let _ = crate::keychain::forget();
+        crate::appconfig::discard(app_data);
 
         let _ = record_seen(app_data);
     }
