@@ -7,49 +7,49 @@
       "key": "ShinyFlakes-android.apk",
       "name": "ShinyFlakes-android-0.1.5.apk",
       "size": 42035478,
-      "sha256": "50ac4f52a29029d08d08c1c73845293b176c2abe67bafb037ab3f5e8680a0681",
+      "sha256": "adb5d31c0cdc0be891fedc83a333bee976545b932009ab8369f7f4312a6f3975",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-android-0.1.5.apk"
     },
     {
       "key": "ShinyFlakes-windows-x64-setup.exe",
       "name": "ShinyFlakes-windows-x64-setup.exe",
-      "size": 2597304,
-      "sha256": "99709bb9bc52916f75710721e09147ac7d5355c3e066cdc495fdabb8d9978245",
+      "size": 2598641,
+      "sha256": "4f4383b1254deab8a6480de61445e6b8f443105677451edbc29e42f8e89926e6",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-windows-x64-setup.exe"
     },
     {
       "key": "ShinyFlakes-windows-x64-portable.exe",
       "name": "ShinyFlakes-windows-x64-portable.exe",
       "size": 6355456,
-      "sha256": "99ccaf606fa308f26590722967dcfa6ff74b923bab5546b38f2aba7fa10eb381",
+      "sha256": "3e1d7259f90aebf583b3dff3990a20911e24a889c745944e7a2b67553e711bb2",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-windows-x64-portable.exe"
     },
     {
       "key": "ShinyFlakes-linux-x86_64.AppImage",
       "name": "ShinyFlakes-linux-x86_64.AppImage",
       "size": 82127352,
-      "sha256": "1ee5d735c0f37ff1b037734ba76897f9f9e76b5676a74e318db189a04da8f390",
+      "sha256": "45307146216e58820607478a60a2cbb117386b24b1b312b6f69c034f83774810",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-linux-x86_64.AppImage"
     },
     {
       "key": "ShinyFlakes-linux-amd64.deb",
       "name": "ShinyFlakes-linux-amd64.deb",
-      "size": 4009790,
-      "sha256": "5f1b9ec2f846a3591ea58486fcfcb4f67381573d5ff3b4f9fac7df1d573be8d4",
+      "size": 4009882,
+      "sha256": "7f10304b9e90fd499b103c631270f3d3843b0d9b60c5e2ad6b5cfc86c006e952",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-linux-amd64.deb"
     },
     {
       "key": "ShinyFlakes-linux-x86_64.rpm",
       "name": "ShinyFlakes-linux-x86_64.rpm",
-      "size": 4010768,
-      "sha256": "bf46ea1bba5f58f7c8302410901b973d558cb01a1900fe7ddad78673ee074f9e",
+      "size": 4010859,
+      "sha256": "cd7ee71783bc05adcab6ab39a71614abf5549fa712936d2b9405b577cabcf50e",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-linux-x86_64.rpm"
     },
     {
       "key": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
       "name": "ShinyFlakes-arch-x86_64.pkg.tar.zst",
-      "size": 3085242,
-      "sha256": "ef04a4ed0bc68d95cf4a6aa4e759abf4ceef8197e4880ed6b134e664c76218eb",
+      "size": 3090352,
+      "sha256": "7b7956b2ca1ce1d9591e8e3ff6af30ce456299b401611b13900a88572262e803",
       "url": "https://github.com/Nodropedd/ShinyFlakes/releases/download/v0.1.5/ShinyFlakes-arch-x86_64.pkg.tar.zst"
     }
   ]

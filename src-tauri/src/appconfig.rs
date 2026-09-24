@@ -95,14 +95,18 @@ pub fn load(app_data: &Path) -> Result<AppConfig> {
         Err(e) => return Err(WalletError::Storage(e.to_string())),
     };
 
-    if blob.len() <= MAGIC.len() || &blob[..MAGIC.len()] != MAGIC {
-        return Err(WalletError::SettingsUnreadable);
-    }
     let key = crate::keychain::load_or_create()?;
-    let plain = key
-        .open(&blob[MAGIC.len()..])
-        .map_err(|_| WalletError::SettingsUnreadable)?;
-    serde_json::from_slice(&plain).map_err(|_| WalletError::SettingsUnreadable)
+    let parsed = (blob.len() > MAGIC.len() && &blob[..MAGIC.len()] == MAGIC)
+        .then(|| key.open(&blob[MAGIC.len()..]).ok())
+        .flatten()
+        .and_then(|plain| serde_json::from_slice::<AppConfig>(&plain).ok());
+    match parsed {
+        Some(config) => Ok(config),
+        None => {
+            reset(app_data)?;
+            Ok(AppConfig::default())
+        }
+    }
 }
 
 pub fn save(app_data: &Path, config: &AppConfig) -> Result<()> {
@@ -162,18 +166,19 @@ mod tests {
     }
 
     #[test]
-    fn a_new_key_cannot_read_the_old_file_until_it_is_discarded() {
+    fn a_file_from_a_deleted_key_is_set_aside_and_replaced() {
         let d = dir();
         let cfg = AppConfig { two_factor: true, ..Default::default() };
         save(&d, &cfg).unwrap();
         assert!(load(&d).unwrap().two_factor);
 
         crate::keychain::forget().unwrap();
-        assert!(is_unreadable(&d), "the old file is sealed with the deleted key");
-
-        discard(&d);
+        assert!(!load(&d).unwrap().two_factor, "a file sealed with a deleted key starts over");
+        assert!(path(&d).with_extension("dat.unreadable").exists(), "the old file is set aside");
         assert!(!is_unreadable(&d));
-        assert!(!load(&d).unwrap().two_factor);
+
+        save(&d, &AppConfig { stay_signed_in: true, ..Default::default() }).unwrap();
+        assert!(load(&d).unwrap().stay_signed_in, "the fresh file keeps what is saved next");
         let _ = crate::keychain::forget();
         let _ = std::fs::remove_dir_all(&d);
     }
