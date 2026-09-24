@@ -207,6 +207,8 @@ pub const SCAN_GAP: u32 = 10;
 
 pub const EXTRA_GAP: u32 = 5;
 
+pub const SCAN_PARALLEL: u32 = 5;
+
 pub const SCAN_CEILING: u32 = 400;
 
 pub async fn esplora_utxos_batch(
@@ -249,7 +251,13 @@ pub async fn esplora_utxos(
 ) -> Result<Vec<super::btc_tx::Utxo>> {
     let mut last = WalletError::Network("no provider configured".into());
     for base in bases {
-        match get_json::<Vec<EsploraUtxo>>(&format!("{base}{address}/utxo")).await {
+        let url = format!("{base}{address}/utxo");
+        let mut answer = get_json::<Vec<EsploraUtxo>>(&url).await;
+        if answer.is_err() {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            answer = get_json::<Vec<EsploraUtxo>>(&url).await;
+        }
+        match answer {
             Ok(list) => {
                 let mut out = Vec::new();
                 for u in list.into_iter().filter(|u| u.status.confirmed || !confirmed_only) {

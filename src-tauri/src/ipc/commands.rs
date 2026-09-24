@@ -471,7 +471,7 @@ async fn scan_stream(
     gap: u32,
     confirmed_only: bool,
 ) -> Result<(Vec<chains::btc_tx::Keys>, Vec<chains::btc_tx::Utxo>)> {
-    use chains::rpc::{SCAN_BATCH, SCAN_CEILING};
+    use chains::rpc::{SCAN_BATCH, SCAN_CEILING, SCAN_PARALLEL};
     let apis = chains::rpc::btc_apis(chain);
     let mut keyring: Vec<chains::btc_tx::Keys> = Vec::new();
     let mut utxos: Vec<chains::btc_tx::Utxo> = Vec::new();
@@ -479,7 +479,7 @@ async fn scan_stream(
     let mut empty_run = 0u32;
     while next < SCAN_CEILING && empty_run < gap {
         let mut batch = Vec::new();
-        for _ in 0..SCAN_BATCH.min(gap) {
+        for _ in 0..SCAN_BATCH.min(gap).min(SCAN_PARALLEL) {
             if next >= SCAN_CEILING {
                 break;
             }
@@ -515,17 +515,11 @@ async fn scan_coins(
         streams.push((kind, false, EXTRA_GAP));
         streams.push((kind, true, EXTRA_GAP));
     }
-    let results = futures::future::join_all(
-        streams
-            .into_iter()
-            .map(|(kind, change, gap)| scan_stream(seed, chain, kind, change, gap, confirmed_only)),
-    )
-    .await;
 
     let mut keyring: Vec<chains::btc_tx::Keys> = Vec::new();
     let mut utxos: Vec<chains::btc_tx::Utxo> = Vec::new();
-    for result in results {
-        let (keys, mut found) = result?;
+    for (kind, change, gap) in streams {
+        let (keys, mut found) = scan_stream(seed, chain, kind, change, gap, confirmed_only).await?;
         let offset = keyring.len() as u32;
         for utxo in &mut found {
             utxo.key_index += offset;
